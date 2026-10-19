@@ -4,6 +4,8 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+## 4.0.0 - 2026-10-19
+
 - **Indonesian ships as a trigger language pack.** `src/routing/trigger_packs/id.json`,
   contributed by @fauzibrevy-hub (#2154), covers the 21 skills the `ja` and
   `zh` packs cover, with phrases such as `tinjau kode`, `audit aksesibilitas`,
