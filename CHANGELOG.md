@@ -4,6 +4,17 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **`omh doctor`'s real-loader probe can observe a load on Windows, and on the
+  install `omh setup` makes.** The probe wrote a synthetic `config.yaml` naming
+  no `plugins.entries.omh.settings.omh_home`, and the plugin refuses to load in
+  a native host whose profile names no store (#2037) -- so every install
+  `omh setup` registers reported `loader_probe_failed` and the row could only
+  ever read `real Hermes loader not observed`. It now carries the binding the
+  real home declares. The child process also gets the OS baseline
+  (`SystemRoot`, `SYSTEMDRIVE`, `windir`, `TEMP`, `TMP`): without
+  `SystemRoot`, `import asyncio` dies with `WinError 10106` before the plugin is
+  reached, which read as a plugin load failure on Windows.
+
 - **A conversation keeps its delegation graph across Hermes' rotating
   compaction.** With `compression.in_place: false`, Hermes moves a
   conversation to a new session id mid-run. The HUD graph, the TUI's agent

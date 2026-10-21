@@ -44,6 +44,7 @@ def observe_real_loader_registration(
     *,
     python_executable: Path | None = None,
     hermes_code_root: Path | None = None,
+    omh_home: Path | str | None = None,
     runner: Runner | None = None,
     timeout_seconds: int = 120,
 ) -> dict[str, Any]:
@@ -65,17 +66,28 @@ def observe_real_loader_registration(
         isolated_plugin = hermes_home / "plugins" / "omh"
         isolated_plugin.parent.mkdir(parents=True)
         shutil.copytree(plugin_dir, isolated_plugin)
-        (hermes_home / "config.yaml").write_text(
-            "plugins:\n  enabled:\n    - omh\n  disabled: []\n",
-            encoding="utf-8",
-        )
-        env = {
-            "HOME": os.environ.get("HOME", ""),
-            "HERMES_HOME": str(hermes_home),
-            "PATH": os.environ.get("PATH", ""),
-        }
-        if hermes_code_root is not None:
-            env["PYTHONPATH"] = str(hermes_code_root)
+        # The plugin refuses to load in a native host whose profile names no
+        # store (#2037), and every install `omh setup` makes names one in
+        # `plugins.entries.omh.settings.omh_home`. A synthetic config without
+        # that binding therefore manufactures a refusal and reports it as a
+        # load failure. Copy the binding the real home declares, so the probe
+        # observes the load the host would actually get.
+        config_lines = ["plugins:", "  enabled:", "    - omh", "  disabled: []"]
+        if omh_home is not None:
+            # Forward slashes, the way `omh setup` writes the setting: a
+            # backslash path would need YAML escaping and reads differently to
+            # the text scan the plugin's standalone lane uses.
+            binding = Path(str(omh_home)).as_posix()
+            config_lines.extend(
+                [
+                    "  entries:",
+                    "    omh:",
+                    "      settings:",
+                    f"        omh_home: {json.dumps(binding)}",
+                ]
+            )
+        (hermes_home / "config.yaml").write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+        env = _probe_env(hermes_home, hermes_code_root)
         command = [str(hermes_python), "-c", _PROBE_SCRIPT]
         try:
             result = execute(command, timeout_seconds, env)
@@ -133,6 +145,29 @@ def resolve_hermes_code_root(hermes_home: Path) -> Path:
     if (own / "hermes_cli").is_dir():
         return own
     return hermes_install_dir(hermes_root(hermes_home))
+
+
+# The OS baseline a Windows child needs to start Python at all. Without
+# `SystemRoot` a socket provider cannot initialize, and `import asyncio` dies
+# with WinError 10106 before the plugin is ever reached -- which reads as a
+# load failure the plugin never caused.
+_BASELINE_ENV = ("SystemRoot", "SYSTEMDRIVE", "windir", "TEMP", "TMP")
+
+
+def _probe_env(hermes_home: Path, hermes_code_root: Path | None) -> dict[str, str]:
+    """The isolated child's environment: the probe's own, plus the OS baseline."""
+    env = {
+        "HOME": os.environ.get("HOME", ""),
+        "HERMES_HOME": str(hermes_home),
+        "PATH": os.environ.get("PATH", ""),
+    }
+    for key in _BASELINE_ENV:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    if hermes_code_root is not None:
+        env["PYTHONPATH"] = str(hermes_code_root)
+    return env
 
 
 def _hermes_python_override() -> Path | None:

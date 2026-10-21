@@ -347,6 +347,7 @@ def run_doctor(paths: OmhPaths) -> list[Check]:
         observe_real_loader_registration(
             paths.hermes_plugin_dir,
             hermes_code_root=resolve_hermes_code_root(paths.hermes_home),
+            omh_home=paths.omh_home,
         )
         if plugin["plugin_dir_installed"]
         else None
