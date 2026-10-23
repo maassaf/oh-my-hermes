@@ -1,0 +1,150 @@
+{
+  "schema_version": "omh_visual_engineering_skill_research/v1",
+  "implementation_status": "planned-not-implemented",
+  "upstream": {
+    "repository": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill",
+    "commit": "a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5",
+    "license": "MIT"
+  },
+  "sources": [
+    {
+      "id": "S1",
+      "kind": "local-primary",
+      "locator": "AGENTS.md"
+    },
+    {
+      "id": "S4",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/commit/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5"
+    },
+    {
+      "id": "S5",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/blob/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5/LICENSE"
+    },
+    {
+      "id": "S6",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/blob/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5/README.md"
+    },
+    {
+      "id": "S7",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5/src/ui-ux-pro-max/scripts"
+    },
+    {
+      "id": "S8",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/blob/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5/src/ui-ux-pro-max/data/ux-guidelines.csv"
+    },
+    {
+      "id": "S10",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5/.github/workflows"
+    },
+    {
+      "id": "S11",
+      "kind": "local-primary",
+      "locator": "src/skills/catalog_definitions.py"
+    },
+    {
+      "id": "S12",
+      "kind": "local-primary",
+      "locator": "src/skills/catalog_harnesses.py"
+    },
+    {
+      "id": "S13",
+      "kind": "local-primary",
+      "locator": "src/skills/catalog.py, src/skills/packaging.py, src/skills/render.py"
+    },
+    {
+      "id": "S14",
+      "kind": "local-primary",
+      "locator": "src/routing/chat.py, src/routing/recommend.py"
+    },
+    {
+      "id": "S15",
+      "kind": "local-primary",
+      "locator": "src/coding/model_routing.py, src/coding/executor_skill_discovery.py"
+    },
+    {
+      "id": "S16",
+      "kind": "local-primary",
+      "locator": "docs/ADDING-A-SKILL.md"
+    },
+    {
+      "id": "S17",
+      "kind": "local-primary",
+      "locator": "src/install/installer.py, src/commands/setup.py"
+    },
+    {
+      "id": "S18",
+      "kind": "local-primary",
+      "locator": "src/plugin_bundle/omh/awareness.py"
+    },
+    {
+      "id": "S19",
+      "kind": "local-primary",
+      "locator": "tests/test_router_content.py, tests/test_model_routing.py, tests/test_skill_governance.py, tests/test_installer_skill_profile.py"
+    },
+    {
+      "id": "S21",
+      "kind": "local-generated-primary",
+      "locator": "skills/omh-{design-orchestration,design-quality-gate,frontend,accessibility-audit,visual-qa}/SKILL.md"
+    },
+    {
+      "id": "S22",
+      "kind": "local-primary",
+      "locator": "src/workflows/design_orchestration.py, src/workflows/design_directions.py, src/workflows/web_visual_qa.py, src/workflows/web_visual_qa_contracts.py"
+    },
+    {
+      "id": "S24",
+      "kind": "remote-primary",
+      "locator": "https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5/src/ui-ux-pro-max/data"
+    },
+    {
+      "id": "S25",
+      "kind": "local-primary",
+      "locator": "src/coding/executor_skill_discovery.py, src/coding/fanout.py, src/coding/fanout_dispatch.py, src/coding/fanout_unit_results.py"
+    },
+    {
+      "id": "S26",
+      "kind": "local-primary",
+      "locator": "src/coding/coding_delegation.py, src/workflows/role_context_packs.py, src/coding/executor_guidance_compatibility.py"
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "status": "adopt",
+      "subject": "local structured search-before-build technique"
+    },
+    {
+      "id": "D2",
+      "status": "adapt",
+      "subject": "required managed-skill reads through existing handoff lanes"
+    },
+    {
+      "id": "D3",
+      "status": "reject",
+      "subject": "new public skill and upstream corpus or installer integration"
+    }
+  ],
+  "executors": [
+    "codex",
+    "claude-code",
+    "hermes",
+    "generic-executor"
+  ],
+  "fanout_contract": {
+    "version": "fanout_contract/v2",
+    "mutation": "rejected",
+    "readiness": "separate-content-addressed-artifact"
+  },
+  "evidence_boundary": {
+    "prepared_requirement": "prepared_not_observed",
+    "receipt_without_telemetry": "executor_reported",
+    "receipt_with_matching_file_read_telemetry": "observed",
+    "visual_pass": "separate_source_revision_bound_capture_gate"
+  }
+}

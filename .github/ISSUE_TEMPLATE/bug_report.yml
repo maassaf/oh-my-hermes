@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What failed?
+    validations:
+      required: true
+  - type: textarea
+    id: user_goal
+    attributes:
+      label: Complete user goal
+      description: What complete outcome were you trying to achieve, beyond the failing step?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: List exact commands and relevant files.
+      placeholder: |
+        1. Run ...
+        2. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: affected_surfaces
+    attributes:
+      label: Affected surfaces
+      description: Select every product or coding-owner surface where you observed the problem.
+      multiple: true
+      options:
+        - Hermes chat or wrapper
+        - Codex
+        - Claude Code
+        - Hermes runtime or handoff
+        - Generic executor
+        - Not executor-specific
+    validations:
+      required: true
+  - type: textarea
+    id: observed_evidence
+    attributes:
+      label: Observed evidence
+      description: |
+        Paste or describe results you personally observed. Label prepared handoffs or plans as
+        prepared_not_observed; they are not execution, review, CI, or merge evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: What observable result would prove the complete problem is fixed?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Hermes version, install method.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Remove credentials, raw prompts, raw platform events, transcripts, and unrelated private data.
+      render: shell
+  - type: markdown
+    attributes:
+      value: |
+        By submitting this report, you confirm that attached evidence is sanitized and contains no secrets or private transcripts.
+

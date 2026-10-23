@@ -1,0 +1,921 @@
+# Harness Quality Contract
+
+`harness_quality/v1` is the small machine-readable contract that tells a chat
+wrapper what quality gate a workflow lane is using.
+
+It exists so Discord, Slack, or hosted Hermes wrappers can render better UX
+without teaching end users command names or parsing generated skill prose.
+
+## What Users Get
+
+For a chat user, this changes the experience from vague status copy to explicit
+state:
+
+- "I need one answer before planning" for clarification lanes.
+- "A draft plan is ready to accept or revise" for planning lanes.
+- "Feedback is clustered, but no roadmap or coding handoff exists yet" for
+  customer triage lanes.
+- "A meeting agenda is prepared, but the meeting outcome is not observed yet"
+  for meeting lanes.
+- "An ops review names risks and blockers, but it is not CI or release
+  evidence" for operating review lanes.
+- "Operating rhythm history is recorded, but unprovided meeting outcomes remain
+  unobserved" for cadence lanes.
+- "A report package outline is ready, but approval and binary PPTX export are
+  not observed yet" for report lanes.
+- "A material package plan is ready, but binary export, render QA, formula
+  recalculation, approval, delivery, and upload are not observed yet" for
+  material lanes.
+- "A reliability review is drafted, but SLO, incident, and error-budget claims
+  require metric or source evidence" for reliability lanes.
+- "A coding handoff is prepared, but execution is not observed yet" for coding
+  lanes.
+- "Review or CI is still missing" before merge-ready status is shown.
+- "This workflow attempt is now a learning trace" when Hermes records the route,
+  next action, missing evidence, eval result, and future regression case without
+  storing the raw prompt or silently patching a skill.
+
+The wrapper can choose buttons from `wrapper_actions`, show progress from
+`evidence_ladder`, and avoid false claims with `overclaim_guards`.
+Local operators can inspect the same contract with `omh harness list`,
+`omh harness inspect <name>`, and `omh harness validate`.
+
+## Contract Shape
+
+Every generated workflow catalog entry and relevant runtime payload can expose a
+contract shaped like this:
+
+```json
+{
+  "schema_version": "harness_quality/v1",
+  "harness": "coding-handling",
+  "quality_tier": "handoff-gated",
+  "quality_bar": [
+    "Clarify scope before edits when target behavior, files, or verification are missing.",
+    "Attach acceptance criteria, verification expectations, and review expectations to the prepared handoff.",
+    "Report coding progress from lifecycle evidence, not from the existence of a prepared prompt."
+  ],
+  "evidence_ladder": [
+    "coding_delegation_prepared",
+    "executor_dispatch_observed",
+    "executor_result_observed",
+    "verification_recorded",
+    "review_ci_merge_recorded_when_required"
+  ],
+  "wrapper_actions": ["accept_plan", "show_prompt_handoff", "copy_prompt_handoff", "choose_executor", "send_to_executor", "send_to_codex", "show_status", "record_result"],
+  "overclaim_guards": [
+    "A prepared coding_delegation.json is not implementation evidence.",
+    "Executor completion is not review, CI, merge-readiness, or merge evidence."
+  ]
+}
+```
+
+## Where It Appears
+
+- `omh docs workflows --json` exposes the full local workflow and harness
+  catalog, including `workflow_catalog/v1.harnesses[].harness_quality`.
+- `omh coding delegate` includes `harness_quality` beside the prepared
+  delegation. Dispatch actions are removed unless the payload also includes a
+  prepared executor handoff.
+- `omh coding delegate --executor codex` includes the dispatch-capable contract
+  in both the public payload and `executor_handoff` when the request is specific
+  enough to delegate. The primary action is `send_to_executor`; `send_to_codex`
+  remains a compatibility alias only for Codex-selected flows.
+- `omh coding delegate --executor claude-code`, `--executor omx-runtime`, or
+  `--executor generic` returns a prompt-only handoff. It can expose
+  `show_prompt_handoff`, `copy_prompt_handoff`, and `choose_executor`, but it
+  must not create a lifecycle run or observed execution evidence.
+- `omh hermes plan` includes `wrapper_contract.harness_quality` so wrappers can
+  render accept/revise/cancel and handoff readiness from the plan contract.
+- Runtime records preserve the contract in `coding_delegation.json` when present.
+- `omh runtime delegation-status --run <run-id>` includes
+  `harness_progress/v1`, which marks ladder steps complete only when the
+  corresponding runtime or wrapper evidence is observed.
+- `omh learning record`, `omh learning eval`, and `omh learning regression
+  replay` expose the `workflow-learning` harness for process-supervision data:
+  why a workflow was chosen, what was prepared, what was observed, which
+  deterministic checks passed, and what improvement candidate still needs human
+  approval.
+- `omh learning recap build|list|show` projects one stored runtime run into
+  `runtime_learning_recap/v1`: seven separate delivery, verification, review,
+  pull-request, CI, merge-readiness and merge cells, each naming `observed`,
+  `failed`, or `unavailable` with its supporting observation type and bounded
+  opaque evidence references. `omh learning record --from-runtime-run` writes
+  the trace and the recap together. The operator `--outcome` is labelled
+  supplied assessment and never sets or upgrades an evidence cell, so a run
+  recorded as `useful` with no eligible terminal observation stays `unknown`.
+  See [Runtime Learning Recap](RUNTIME-LEARNING-RECAP.md).
+- `omh learning missed-route` is the wrapper-friendly shortcut for "Hermes did
+  not use the expected OMH workflow." It records a metadata-only trace, eval,
+  regression placeholder, and review candidate in one step. A provided
+  `--fixture-message` is operator-minimized replay text; without it, replay is
+  skipped until a fixture is added.
+- `omh learning index check` and `omh learning index rebuild` keep the local
+  workflow-learning index repairable if metadata records exist but the pointer
+  index drifts. Rebuilding the index is not workflow execution, skill mutation,
+  or proof that a future workflow improved.
+- `omh learning audit` reads the local learning corpus and returns
+  `workflow_learning_audit/v1`: trace/eval/regression/export counts, coverage,
+  stale-index blockers, regression replay status, and the next repair or review
+  action. The same payload includes `learning_audit_card/v1` so Hermes wrappers
+  can render a compact review card with record, eval, regression, audit, export,
+  replay, index-check, and index-rebuild actions. The audit is readiness
+  evidence for the learning corpus only; it does not patch skills, execute
+  workflows, or prove future behavior improved.
+- `omh learning candidate <trace-id>` returns an
+  `improvement_candidate/v1` plus `improvement_candidate_review_card/v1`. The
+  review card is the Hermes-facing surface for approve/revise/reject decisions,
+  regression-case follow-up, and status narration. It is not a source patch,
+  automatic skill mutation, or proof that future behavior changed.
+- `omh learning review` returns `workflow_learning_review_queue/v1`: the
+  local human-review queue for pending candidates, approved candidates that
+  still need a patch proposal, proposals that need regression work, and
+  proposals ready to copy as patch handoff material. The queue is review
+  navigation only; it does not approve candidates, apply source changes, or
+  prove future behavior improved.
+- `omh learning review-candidate <candidate-id> --decision approve|revise|reject`
+  records the human gate decision for an improvement candidate and refreshes
+  its review card. Optional review notes are stored only as hash and length, not
+  raw text.
+- `omh learning proposal <candidate-id>` records an
+  `improvement_patch_proposal/v1` snapshot for the candidate's current review
+  and regression state. Draft statuses such as `needs_regression_case` remain
+  durable learning records; `ready_for_human_patch` requires approval plus
+  passing regression replay. The proposal is a non-applying patch handoff for
+  human review; it is not a source patch, automatic skill mutation, or proof
+  that future behavior changed.
+- `omh learning export` creates a redacted `workflow_learning_export/v1` review
+  bundle from selected traces plus related evals, candidates, and regression
+  cases, and patch proposals. The bundle omits raw prompts and fixture text; it
+  is review material, not model training, automatic skill patching, execution,
+  review, CI, merge, or proof that future routing improved. Export bundles are
+  derived artifacts and are not part of the canonical learning index repair loop.
+
+## Teaching A Proven Workflow (agent-facing)
+
+A user who has just watched a workflow work can ask Hermes to keep it. The
+`omh learning skill-draft` group is the deterministic backend for that request;
+users express the intent in natural language and Hermes fills the flags.
+
+- `omh learning skill-draft new "<explicit request>" --name <slug> --source-run
+  <run-id> --instruction ... --input name=description --precondition ...
+  --stop-condition ... --verification ...` returns `skill_draft/v1`. It records
+  a draft only when the message carries an explicit learning signal such as
+  "turn this into a skill"; passive activity exits non-zero with
+  `no_explicit_learning_signal` and writes nothing. The draft keeps the fixed
+  instructions separate from the declared inputs, preconditions, stop
+  conditions, and verification steps, and its provenance names the
+  user-selected source runs, the transient identifiers redacted out of the
+  request, and the pending review decision.
+- A draft is inactive by construction. It is stored under
+  `.omh/learning/skill-drafts/`, is never written under `skills/`, never becomes
+  catalog data, and carries its proposed name under `proposed_skill_name` rather
+  than `name`. A name that collides with an installed skill fails validation,
+  and an inactive draft carries no copy-ready proposal at all.
+- `omh learning skill-draft show <draft-id>` returns the draft plus a live
+  `skill_draft_generated_output_check/v1`: the draft validates, the catalog
+  contract is clean, the draft projects to a `SkillDefinition` the catalog's own
+  per-definition validator accepts, and that definition renders a single-line
+  frontmatter description and a catalog-index line inside its byte ceiling.
+  `activation_blockers` is what a reviewer has to clear.
+- `omh learning skill-draft review <draft-id> --decision approve|revise|reject`
+  is the only activation path. Approval recomputes the generated-output checks
+  and refuses to activate when any fail, so an approval on its own can never
+  activate a draft that would not render a valid skill. Only a passing check set
+  plus an explicit approval flips the draft to `active_proposal` and mints the
+  copy-ready `skill_draft_proposal/v1`. Review notes are stored as hash and
+  length, never raw text.
+- Generated bytes are candidate material, not a shipped artifact. The words
+  below are contract vocabulary, not a description of what ships today: no
+  promotion path exists in this harness, so nothing here reads as an available
+  command. They are the rules any promotion path would have to satisfy before
+  it could be built.
+- A candidate is bytes plus a digest. Whatever renders a skill retains the
+  rendered bytes and their sha256 digest under the draft, so a reviewer
+  decides on the exact bytes a promotion would write rather than on a promise
+  to re-render later. Re-rendering to different bytes yields a different
+  digest and reopens the decision, and a decision recorded against a stale
+  digest is refused instead of carried forward.
+- Promotion is review-gated and atomic. Only an approved draft would be
+  promotable, and the write would take the retained candidate bytes whose
+  digest the review named. Either the approved artifact exists complete at its
+  own path or nothing was written: no half-promoted skill, and the candidate
+  stays put so a failed promotion loses no review evidence. Rendering,
+  approving, and promoting stay three separate observed events, and none of
+  them implies the next.
+- Even an activated draft is a proposal. It is not an installed skill, not
+  catalog data, and not proof that Hermes Agent `/learn`, a maintainer, or any
+  runtime acted on it.
+
+## Wrapper Rules
+
+- Use `wrapper_actions` as platform-neutral action ids; map them to buttons,
+  menu items, or thread actions in the adapter.
+- Use `evidence_ladder` to show progress, but mark a step complete only when a
+  runtime record or wrapper observation proves it.
+- Use `quality_bar` as the lane's success checklist.
+- Use `overclaim_guards` before changing status text. If a guard conflicts with
+  a later artifact, show the blocker instead of the optimistic state.
+- Treat `harness_progress/v1.next_step` as a wrapper hint, not as proof that the
+  next action has already happened.
+
+## Reply Lint
+
+The reply rules -- OMH's record vocabulary stays in records and tool calls,
+awareness lines are never quoted, and a stop or a decision the user owns ends
+the turn with the next action offered as a question -- ship as prompt text in
+every skill's Runtime Evidence tail, the common rail, and the awareness primers.
+Nothing observed whether a reply followed them until a person read "this is an
+evidence-bounded surface" or "I will not merge here" and said so.
+
+`omh quality-evidence reply-lint` reads the sentence a person read and reports
+where it departs from those rules:
+
+| Finding | What it means |
+| --- | --- |
+| `record_term_leak` | a record term in the reply: the rail's list (`prepared_not_observed`, `not_observed`, `evidence boundary`, `handoff`, the qualified `surface`/`lane`/`wrapper` forms) plus the Korean renderings read in live replies (`표면`, `레인`) |
+| `awareness_line_quoted` | an `[OMH Awareness]`, `Boundary:`, or `Route hint:` line quoted into the reply |
+| `refusal_closer` | the closing paragraph declares what will not be done and offers no question |
+| `decision_without_question` | the closing paragraph names an approval or a decision the user owns and offers no question |
+
+```sh
+omh quality-evidence reply-lint --text-file reply.txt [--user-text-file asked.txt]
+omh quality-evidence reply-lint --stdin < reply.txt
+omh quality-evidence reply-lint --hermes-session latest --last 5 [--source tui] [--json]
+```
+
+Only the closing paragraph decides the last two: a refusal in the body
+followed by a closing question is the rule's own shape, what was left undone
+stated as the option it leaves open. A term the user's own message names is
+explained on request, not leaked, so it is carved out and listed rather than
+counted. The Hermes source opens `state.db` read-only, pairs each reply with
+the user message it answered, and skips the `[PRIOR CONTEXT ...]` rows a
+compaction re-injects. A finding exits 1 so a QA loop can gate on it.
+
+The payload is `reply_lint/v1` and carries its own claim boundary: a clean
+result shows that the text carries none of these shapes. It does not show that
+the reply was correct, complete, or in the host's own voice, and it is not
+execution, review, CI, or merge evidence. `--source` scopes `latest` to the
+most recent session that Hermes tagged with that surface (`tui`, `cli`,
+`desktop`, ...; `(none)` selects untagged sessions); an explicit id whose tag
+differs, or that has no session row to check the tag on, is an error, so a
+filter never looks applied when it was not.
+
+## Session Usage
+
+OMH's tools and skills reach a Hermes session through whichever surface opened
+it -- the TUI, the CLI, the desktop app, a one-shot run -- and the skill
+catalog is installed the same way for all of them. Nothing observed which
+surfaces the tools and skills actually reached until a person opened
+`state.db` by hand and found whole surfaces with sessions and tool calls but
+not one `omh_*` call.
+
+`omh quality-evidence session-usage` reads Hermes' own session store and
+reports, per `sessions.source` tag, what Hermes recorded for its sessions:
+
+| Column | What it counts |
+| --- | --- |
+| `sessions` | session rows with that source tag (`(none)` groups rows without one, and `--source "(none)"` selects them) |
+| `tool_calls` | distinct tool results the session persisted (`messages` with `role = 'tool'`) |
+| `omh_tool_calls` | those whose `tool_name` starts with `omh_`, plus `omh_tool_names` per name |
+| `sessions_with_omh_tool` | sessions with at least one such call |
+| `skill_views` | distinct `skill_view` results |
+| `omh_skill_views` | those whose result names a label the OMH catalog renders (current, historical, or retired), whether it is a SKILL.md load or a name-only result (a reference-file load, a compaction placeholder), plus `omh_skill_names` per name |
+| `sessions_with_omh_skill_view` | sessions with at least one such load |
+| `sessions_with_any_omh` | sessions with either signal |
+
+```sh
+omh quality-evidence session-usage [--since 2026-09-01T00:00:00Z] [--source tui] [--json]
+```
+
+The database opens `mode=ro` and nothing is written. Every count is over
+distinct `tool_call_id` per session, because a compaction re-persists tool
+rows under new ids and a raw row count would inflate every surface that ran
+long enough to compact; the first row by id decides what a call was, and a
+row without a `tool_call_id` counts once by its own id. The OMH-skill signal
+is the skill's name carried back in the `skill_view` result: a label the
+catalog renders, which covers the `omh-*` and `ulw-*` labels alike, every
+label an earlier release rendered, and the labels of retired skills, so a
+session recorded before a rename still counts. A reference-file load and the
+`[skill_view] name=...` placeholder a compaction leaves carry only that name;
+a result that is not a JSON object is read for its frontmatter `name:` line.
+The description is not required to carry anything. A result whose description
+starts with the `[omh] ` prefix still counts under a name the catalog does not
+render (a skill imported from a local source), and non-JSON content with no
+catalog name falls back to that marker. The window field is
+`COALESCE(last_activity_at, started_at)`, and `--since` takes an ISO-8601
+timestamp or epoch seconds. Archived and hidden sessions are included: a
+session that used OMH and was archived later still used it. An empty window
+exits 0 with `session_count: 0` and `observed: true`, because an empty
+observation is not failed work; a missing or unreadable database exits 2. A
+loop that wants to gate on utilization reads `totals`, not the exit status.
+
+The payload is `session_usage/v1` and carries its own claim boundary: it is a
+read-only observation of Hermes' session store grouped by the host's own tag.
+It counts tool results and skill loads Hermes persisted to a session; it does
+not show that the model consumed them, that a call succeeded, that a skill's
+guidance was followed, or that a reply was correct, and it is not execution,
+review, CI, or merge evidence.
+
+## Memory Evidence
+
+`omh memory recall-suite` runs synthetic fixtures; it cannot say whether OMH
+memory did anything on a real machine. `omh quality-evidence memory` counts
+what four local records hold over a window ending now:
+
+```sh
+omh quality-evidence memory [--days 7 | --since 2026-10-01T00:00:00Z] [--json]
+```
+
+| Section | What it counts |
+| --- | --- |
+| `state_db.omh_memory` | `omh_memory` calls, per action (the result's `action`, else the call's `action` argument, mapped onto the tool's own actions) and per result `status`; `(no_result)` when no tool row was persisted |
+| `state_db.native_memory` | Hermes `memory` calls, per action (`action` or each `operations[].action`, mapped onto add/replace/remove/batch) and per outcome (the result's `success`) |
+| `state_db.sessions_with_omh_memory_write` | sessions with a `capture` that returned `remembered` or `pending_review`, a `demote` that returned `demoted` or `pending_review`, a `correct` that returned `corrected` or `pending_review`, or a `retire` that returned `retired`, per `sessions.source`; a `confirm` is not counted, since its status cannot say whether it wrote anything |
+| `omh_store.records` | admitted records per `source` and admission state, and those whose `created_at` is in the window; a candidate awaiting review is not a record |
+| `omh_store.last_prefetch` | the `omh memory status` view of the last prefetch receipt |
+| `omh_store.consolidation_journal` | briefs raised in the window, per reason family (a reason up to its first `:`) |
+| `omh_store.write_journal` | native writes observed in the window per action, and removes per `removed_entry_demoted`; `journal_at_cap` is true when the journal holds its retention cap (`journal_limit` lines), so older lines are gone and these counts may be short |
+| `hermes_memory_files` | chars, cap, and headroom per Hermes memory file |
+
+Calls are distinct call ids per session, the first row by id deciding on both
+the assistant and the result side, and the window field is the message
+timestamp. Hermes' generic `tool_call` wrapper is unwrapped to its
+`{name, arguments}` or one-entry `calls` list; a longer `calls` list is one
+Hermes refuses for local tools, and a wrapped call whose tool row is named
+`tool_call` and carries an `error` never ran, so neither is counted. `--since` takes an ISO-8601 timestamp or epoch
+seconds, as in `session-usage`; `--days` (default 7) is the window ending now.
+
+An action the model wrote passes only when it is one of the tool's own
+actions, and a status, source or reason label only when it is a short
+identifier; anything else counts as `(other)`, so no message or record text
+reaches the payload.
+
+The `headline` is computed from the counts above: facts remembered, Hermes
+entries OMH stored a verified copy of (a `demoted` result leaves Hermes
+unchanged until Hermes' own tool removes the entry), and native entries freed
+after a demotion (the write journal's `removed_entry_demoted`; at the journal's
+cap its scope says earlier removes may be missing). Each line names its window
+and the home its count came from. Pass the global `--hermes-home`
+to read a Hermes profile, whose OMH home resolves from its own config.
+
+Exit 0 when every source was read, including an empty one. Exit 3 when
+`state.db`, the store, a journal, the prefetch receipt, or a memory file could
+not be read, with the source named in `unread_sources`. Directories are
+probed by listing them, because `stat` succeeds on a directory nobody may
+list, so a refused one is not taken for an absent one. A journal line or a
+record file that does not parse also marks the store partial and is counted
+(`unparsed_lines`, `refused_files_by_reason`): the provider rewrites a journal
+whole and atomically, so a torn line is damage, which the next provider write
+clears. Exit 2 for a malformed `--days` or `--since`.
+
+The payload is `memory_evidence/v1`. Its claim boundary: the counts are local
+records of what was written, served, and freed, not evidence that a recalled
+memory was read or improved an answer, and not execution, review, CI, or merge
+evidence.
+
+## Session File Activity
+
+Audience: operators, and agents preparing a review or a handoff. There is no
+chat tool for it: a tool would cost every turn schema bytes for a question
+asked after a run, not during one.
+
+A tool-call count cannot say which files a run read, wrote, or patched.
+`omh quality-evidence file-activity` answers that for one Hermes session at
+query time, from the records Hermes already keeps: the `tool_calls` on each
+assistant row (the call id, the tool, and its arguments) and the tool row
+carrying the same `tool_call_id` (the tool's own result and, for a call that
+never ran or whose effect is unknown, `effect_disposition`). OMH keeps no
+store for it and records nothing while the session runs.
+
+```sh
+omh quality-evidence file-activity --hermes-session <id|latest> [--workspace DIR] [--max-files 100] [--json]
+```
+
+The payload is `session_file_activity/v1`:
+
+| Field | What it holds |
+| --- | --- |
+| `files` | one entry per workspace file, with `first_at` / `last_at` (UTC) and `activity`: one row per operation and outcome, with its call count and first/last time |
+| `calls` | distinct `read_file`, `write_file`, and `patch` calls by tool and by outcome, plus `results_without_call` (results whose call row is gone, so no path can be attributed) |
+| `workspace` | where the root came from: `argument`, `git_repo_root`, `cwd` (Hermes' own workspace key, in that order), or `unknown` |
+| `file_count`, `shown_file_count`, `max_files`, `truncated`, `omitted_file_count` | the bound; the earliest-touched files are kept |
+| `omitted_paths` | declared paths not shown, counted by reason |
+
+Operations are `read`, `write`, `update` (a replace-mode patch or a V4A
+`Update File`), `add`, `delete`, `move_from`, and `move_to`; a V4A patch
+contributes every file it declares, each with the call's outcome.
+
+The outcome is closed: `succeeded`, `failed`, or `unknown`, read from the
+recorded result's own fields, the ones Hermes' own classifier reads, and never
+from wording. `succeeded` needs a `content` field (`read_file`), a
+`bytes_written` field (`write_file`), or `success: true` (`patch`), with no
+`error`. `failed` is `effect_disposition: none`, a truthy `error`, or
+`success: false`. Everything else is `unknown`: no recorded result,
+`effect_disposition: unknown`, or a result that is not a JSON object or lacks
+the success field. So a submitted path is never shown as a successful write.
+
+Paths are workspace-relative only. A path outside the workspace root, the root
+itself, a relative path when the session recorded no cwd, a `~` path, a
+URL-like value, one with control characters, one over 4096 characters, or a
+non-string argument is left out and counted under its reason; its value never
+reaches the payload or the text. Containment is judged first by the path's
+spelling after `..` is collapsed, then through its symlinks: a path inside the
+workspace by its spelling whose links lead outside it, such as `linked/notes.md`
+when `linked` points elsewhere, is left out as `symlink_escape`. The links are
+resolved when the query runs, reading link metadata only; no named file is
+opened or read. So the verdict reflects the links as they stand at query time,
+and on a machine without the workspace the spelling alone decides. A compaction re-persists rows, so a call is one distinct call id per
+session, the first row by id deciding both its arguments and its result.
+
+A session with no file calls is an observation and exits 0. A missing
+database, an unknown session id, or `--max-files` below 1 exits 2. The claim
+boundary says what the payload is not: it is not file-content, diff, test,
+review, CI, or merge evidence.
+
+Each Hermes profile is its own Hermes home with its own `state.db`, so the
+query reads only the profile it is pointed at (`--hermes-home`, or
+`HERMES_HOME` as Hermes sets it), and `latest` means that profile's latest
+session. Because nothing observes while the session runs, there is no observer
+that can load late: a call with no recorded result is `unknown`, and a result
+whose call row is gone is counted in `results_without_call`.
+
+The `workspace-file-operator`, `maestro` (coding handoff), and `code-review`
+workflows cite this receipt as file lineage: which workspace files a session
+named and the outcome Hermes recorded, under the same boundary.
+
+## Agent Debug Report
+
+Audience: people ask Hermes why a run went wrong; agents and operators run the
+CLI.
+
+The `agent-debug` skill diagnoses a stuck, looping, drifting, or repeatedly
+failing agent run. `omh quality-evidence agent-debug` gives that diagnosis a
+floor of observed rows and builds the incident on top of them: it reads one
+session, returns findings derived from record fields, each cited by
+reference, and then the capture, the competing hypotheses, and a proposed
+recovery that is never executed.
+
+```sh
+omh quality-evidence agent-debug --hermes-session <id|prefix|latest> \
+  [--session-record <file.jsonl>] [--turns N|N:M|N:] \
+  [--observable looping|repeated_work|goal_drift|context_loss|tool_stall|unexpected_cost] \
+  [--receipt <dispatch_summary.json>]... [--max-rows N] [--max-row-bytes N] [--json]
+omh quality-evidence agent-debug-export --report <reviewed.json> --output <new-file> \
+  [--session-record <file.jsonl>] [--confirm-export]
+```
+
+### Selecting one session
+
+The source is Hermes' own `state.db`, opened `mode=ro`, or a supplied JSON
+Lines session record with one message object per line (the fields a
+`messages` row has: `session_id`, `role`, `content`, `tool_call_id`,
+`tool_name`, `tool_calls`, `timestamp`, `_compressed_summary`). A state.db
+finding cites `messages.id`; a record finding cites `<record>:<line>`.
+
+`--hermes-session` takes a full id, `latest`, or a prefix that names exactly
+one session. A prefix that names more than one is refused with the sessions
+it matched, and a record that holds more than one session needs a selector;
+neither case is ever guessed. `--turns` narrows the rows read to a 1-based,
+inclusive range of user turns (compaction summary rows are not turns). The
+source is never written; a diagnosis creates no file anywhere.
+
+### Findings
+
+| Kind | Derived from |
+| --- | --- |
+| `tool_error` | a tool result whose JSON object records an error in a typed field: a non-zero integer `exit_code`, `success: false`, or a non-empty string `error` (error class `nonzero_exit`, `success_false`, `error_field`) |
+| `identical_retry_after_error` | the next call of the same tool after a `tool_error` whose arguments, from the assistant row's `tool_calls`, have the same sha256 over canonical JSON |
+| `background_without_notify` | a tool result that records a started process (an integer `pid`) with `notify_on_complete` not true |
+| `compaction_boundary` | a message row marked `_compressed_summary` |
+
+Every finding carries a citation with a closed key set: the session id, one
+message id (or record line) and timestamp per row the finding spans, the
+tool_call ids, the tool name, the error class, the exit code, and a
+16-character argument digest. No prompt, reply, argument, or tool output is
+quoted, and no word of a result is matched. The validator refuses a report
+whose finding lacks the citation its kind requires, cites another session,
+or carries any key outside that shape; the reader runs it on every report
+before returning it. A tool call counts once per distinct `tool_call_id`,
+the first row deciding what it was, because a compaction re-persists rows
+under new ids. A field the source does not have lists its kind under
+`unavailable` and leaves it out of `checked_kinds`, so an unchecked kind
+never reads as clean.
+
+### Bounded reading
+
+At most `--max-rows` rows (state.db) or lines (record) are read, and at most
+`--max-row-bytes` of any one cell or line is taken into memory: state.db cells
+are cut inside SQLite, and a record line over the budget is skipped in fixed
+chunks without being kept. Each row is reduced on read to the typed fields the
+kinds need. A row over the byte budget is listed under
+`budget.oversized_refs` and not checked; a session cut short sets
+`budget.row_limit_reached`. `budget.complete` is true only when neither
+happened, and the hypotheses below never treat an absence as evidence unless
+it is.
+
+### Incident artifacts
+
+| Artifact | What it holds |
+| --- | --- |
+| `agent_failure_capture/v1` | the identity the case is bound to (session, source, selection, turn range, source snapshot, report digest), the observed finding ids, every piece of `unavailable` evidence (an unchecked kind, oversized rows, rows past the limit, and host runtime state, which a record never holds), and the receipts admitted or refused |
+| `agent_failure_pattern_hypothesis/v1` | at least two competing hypotheses from a closed pattern table, each `observed: false`, with typed `evidence_for` and `evidence_against` (`finding:<id>` or `absence:<kind>`), the evidence it could not see, a confidence, and the observation that would decide it |
+| `contained_recovery_action/v1` | the smallest reversible step for the leading hypothesis, `requires_approval: true`, `executed: false`, and the actions diagnosis did not take |
+
+A hypothesis is ruled out only by an observed absence in a complete reading.
+`outside_recorded_evidence` -- the cause lies in provider, model, or runtime
+state the record does not hold -- can never be ruled out from records, so a
+case with a supported pattern stays `unresolved`, and no hypothesis may claim
+`high` confidence while a competitor is open. Each artifact is validated
+against the one it is built on, by digest, so a capture for another report or
+a hypothesis for another capture is refused. What a capture says was checked
+decides whether an absence can rule a hypothesis out, so its `checked_kinds`,
+`unavailable`, and `finding_counts` must equal what the report shows, and the
+report's own `checked_kinds` must be every kind it does not list as
+unavailable.
+
+`--receipt` binds a fanout `dispatch_summary.json` (`fanout_dispatch_summary/v1`)
+as evidence. A unit is admitted only when it binds all five identities: the
+report's session (`origin_session_id`), a run (`run_ref`), a unit
+(`unit_id`), a configuration (the summary's `contract_digest`), and freshness
+(an `observed_at` no earlier than the session's start; a session with no
+recorded start binds no freshness). Anything else is refused by name
+(`foreign_session`, `run_unbound`, `configuration_unbound`,
+`freshness_unbound`, `stale`, `identity_conflict`, ...).
+
+### Example: evidence-backed
+
+A fixture session where the agent re-ran a failing command with identical
+arguments, then hit a compaction, then a failed patch, asked with
+`--observable looping` (`tests/test_agent_debug_incident.py` renders this
+example from its fixture and checks it matches this page):
+
+```text
+OMH agent debug report: session 20260930_091500_c0ffee (source tui)
+  started 2026-09-30T08:55:00Z    ended 2026-09-30T08:55:20Z    end reason tui_shutdown
+  selected exact from state.db    turns all of 3
+  tool calls 4 (distinct tool_call_id)    findings 5
+Findings
+  tool_error:3  messages 3  at 2026-09-30T08:55:03Z  calls c1  tool terminal  nonzero_exit  exit 1
+  identical_retry_after_error:3  messages 3,5  at 2026-09-30T08:55:03Z,2026-09-30T08:55:05Z  calls c1,c2  tool terminal  nonzero_exit  exit 1  args sha256 5227c58c95dcb311
+  tool_error:5  messages 5  at 2026-09-30T08:55:05Z  calls c2  tool terminal  nonzero_exit  exit 1
+  compaction_boundary:9  messages 9  at 2026-09-30T08:55:09Z
+  tool_error:12  messages 12  at 2026-09-30T08:55:12Z  calls c4  tool patch  success_false
+Budget
+  rows read 12 of at most 20000    bytes read 1207 (at most 262144 per row)
+  complete yes
+Boundary
+  An agent debug report cites rows one session record persisted, read without writing to it, and quotes no prompt, reply, argument, or tool output. A finding is an observed record, not a diagnosis: it does not show why the agent acted as it did, that a retry was wrong, that a compaction lost what mattered, or that any recovery worked, and it is not execution, review, CI, or merge evidence. A kind listed as unavailable was not checked, and rows listed as oversized or past the row budget were not read.
+Incident (observable looping)
+  receipts admitted 0    refused 0
+  unavailable: host_runtime
+Hypotheses (unresolved)
+  H1 tool_error_retry_loop: supported, confidence low
+    for finding:identical_retry_after_error:3
+    against (none)
+    decided by a retry with changed arguments that succeeds, or the same arguments failing again after a change elsewhere
+  H2 context_loss_after_compaction: supported, confidence low
+    for finding:compaction_boundary:9
+    against (none)
+    decided by the same failure in a turn range with no compaction before it
+  H3 outside_recorded_evidence: unresolved, confidence low
+    for (none)
+    against (none)
+    could not see unavailable:host_runtime
+    decided by a replay of the cited turns, or host evidence (provider, model, or runtime state) the record does not hold
+Contained recovery (proposed, requires approval, not executed)
+  change_arguments_before_next_retry: Pause the run before its next call of the cited tool, and change the arguments or the approach the cited error points at before it retries.
+  targets finding:identical_retry_after_error:3
+  not performed: recovery, executor_reset, session_mutation, runtime_repair, export, archive, github_issue, comment
+```
+
+Two patterns are supported and neither is proven: the record shows the
+retry failing again and a failure after the compaction, but only a replay or
+host evidence decides which (or neither) caused the loop. The proposed step
+targets the cited retry and changes nothing until someone approves it.
+
+### Example: unavailable
+
+The same session read from a Hermes build without the `tool_calls` and
+`_compressed_summary` columns, asked with `--observable context_loss`:
+
+```text
+OMH agent debug report: session 20260930_091500_c0ffee (source tui)
+  started 2026-09-30T08:55:00Z    ended 2026-09-30T08:55:20Z    end reason tui_shutdown
+  selected exact from state.db    turns all of 4
+  tool calls 4 (distinct tool_call_id)    findings 3
+Findings
+  tool_error:3  messages 3  at 2026-09-30T08:55:03Z  calls c1  tool terminal  nonzero_exit  exit 1
+  tool_error:5  messages 5  at 2026-09-30T08:55:05Z  calls c2  tool terminal  nonzero_exit  exit 1
+  tool_error:12  messages 12  at 2026-09-30T08:55:12Z  calls c4  tool patch  success_false
+Unavailable
+  identical_retry_after_error: messages.tool_calls column not present
+  compaction_boundary: messages._compressed_summary column not present
+Budget
+  rows read 12 of at most 20000    bytes read 483 (at most 262144 per row)
+  complete yes
+Boundary
+  An agent debug report cites rows one session record persisted, read without writing to it, and quotes no prompt, reply, argument, or tool output. A finding is an observed record, not a diagnosis: it does not show why the agent acted as it did, that a retry was wrong, that a compaction lost what mattered, or that any recovery worked, and it is not execution, review, CI, or merge evidence. A kind listed as unavailable was not checked, and rows listed as oversized or past the row budget were not read.
+Incident (observable context_loss)
+  receipts admitted 0    refused 0
+  unavailable: identical_retry_after_error, compaction_boundary, host_runtime
+Hypotheses (unresolved)
+  H1 context_loss_after_compaction: unresolved, confidence low
+    for (none)
+    against (none)
+    could not see unavailable:compaction_boundary
+    decided by the same failure in a turn range with no compaction before it
+  H2 outside_recorded_evidence: unresolved, confidence low
+    for (none)
+    against (none)
+    could not see unavailable:host_runtime
+    decided by a replay of the cited turns, or host evidence (provider, model, or runtime state) the record does not hold
+Contained recovery (proposed, requires approval, not executed)
+  collect_discriminating_evidence: Change nothing in the run yet: replay the cited turn range or supply the host evidence the decisive observation needs.
+  not performed: recovery, executor_reset, session_mutation, runtime_repair, export, archive, github_issue, comment
+```
+
+Neither hypothesis can be supported or ruled out, so the case stays
+unresolved and the only proposal is to collect the evidence that would
+decide it.
+
+### Export
+
+Sharing is a separate action, never a side effect of diagnosis.
+`agent-debug-export` takes a saved `agent-debug --json` payload the user
+reviewed, re-validates the report and the three artifacts, and refuses a key
+outside their closed shapes (a reviewer's note, a memo on the recovery), so
+the package carries ids, digests, counts, timestamps, the source and receipt
+file names, closed-vocabulary values, and OMH's own fixed wording only. It
+re-reads every cited reference from the source and refuses one that is
+missing, foreign (now in another session), stale (its timestamp changed), or
+mismatched (not the cited tool call or summary), and calls every reference
+stale when the source moved under the report's snapshot: the record file's
+size or modification time changed, or the session in state.db gained or lost
+rows. It drops the absolute source path and the session selector the user
+typed, and runs a deterministic leak scan for absolute paths,
+credential-shaped values, a value that is a phone number or email address,
+raw-material keys, and body-length strings. Without `--confirm-export` it
+prints the package, says when `--output` already exists or lies inside the
+Hermes home, and writes nothing; with it, the package goes to a new private
+file that is never overwritten, never written through an existing name or
+symlink, never inside the Hermes home (its parent directory is resolved
+first) or over the record, and removed again if the write fails. Nothing is
+uploaded, filed as an issue, or posted.
+
+A valid report exits 0 whether or not it has findings: a finding is an
+observation to cite, not failed work, and a loop that wants to gate reads
+`finding_counts`. A missing database or record, an unknown or ambiguous
+session, an artifact that fails validation, or a refused export exits 2.
+
+The payloads carry their own claim boundaries: a finding is an observed
+record, not a diagnosis, a hypothesis is inferred, a supported one is a
+correlation and not a proven cause, the recovery action was not executed,
+and none of it is execution, review, CI, or merge evidence, or proof that a
+future run is fixed.
+
+## Cost Receipt
+
+Audience: people ask in chat; agents and operators read the tool payload or
+the CLI.
+
+A person asks "how much did this task cost?" in a Hermes chat. The model calls
+`omh_run_summary`, whose payload carries a `cost_receipt`
+(`omh_cost_receipt/v1`), and relays `cost_receipt.text`. "This task" is the
+calling conversation, and the receipt sums what that work recorded:
+
+| Source | What links it to the conversation |
+| --- | --- |
+| Hermes session | the session plus its compression continuations, the identity set the HUD already owns delegate children with |
+| Delegated Hermes children | every session Hermes marks with `model_config._delegate_from` below the conversation, walked recursively the way Hermes' own cascade walks them |
+| Fanout units | `origin_session_id` on the unit in `dispatch_summary.json`, stamped by `omh coding fanout dispatch` from the `HERMES_SESSION_ID` Hermes injects into terminal commands; the same stamp on the summary covers that run's recovery attempts |
+| Kanban workers | `tasks.session_id` on the board, which Hermes stamps with the originating session when a task is created inside an agent loop (a worker's follow-up task inherits it); the worker's own session is the `worker_session_id` it stamped on its run when it reported, read with its continuations and delegates from the state.db of the profile the run was claimed for. Every board is read, the default one and each named one |
+
+The receipt keeps three numbers apart. Observed cost is only what a record
+priced: a Hermes usage row with a cost status other than `unknown` (the
+`included` status is a vouched `$0`), or a cost an executor CLI reported for
+its unit. Usage with no recorded price is reported as tokens, with the models
+named, and is never added to the dollar figure or priced from OMH's own
+ballpark table. A delegated child, fanout unit or kanban worker that ran and
+recorded no usage is listed as missing, not counted as zero; so is a worker
+run that never stamped its session (a crashed worker, one still running), since
+no timing window or title is used to guess which session it was. A worker run
+with no `spawned` event and no stamp started no worker and is not listed. The
+kanban line names the boards it read, and says so when no board exists or one
+could not be read. Every receipt also says what it does not cover: fanout runs
+dispatched outside a Hermes session or before the stamp existed, standalone
+`omh hermes-child dispatch` runs, kanban tasks created from the CLI or
+dashboard (which record no originating session), and earlier attempts of a
+re-dispatched unit (the dispatch summary keeps the latest).
+
+```sh
+omh quality-evidence cost-receipt --session <any session id of the conversation> [--json]
+```
+
+The CLI prints the same plain text by default and exits 2 when Hermes has no
+row for the session, so "no record" is never read as "cost nothing". Both
+surfaces open `state.db` and `kanban.db` with `mode=ro` and read ids, models,
+counts and amounts only; no prompt, reply, task body or transcript text is
+read. The receipt is not a provider invoice.
+
+## Declared Verdicts
+
+`verification-gate` issues `claim_verdict/v1` as PASS, HOLD or BLOCK,
+`code-review` ranks findings per axis, and `ultraqa` reports pass/fail
+evidence. Until #1818 those lived in the conversation and nowhere else: a later
+session could not ask what the verdict was, whether a HOLD was resolved, or
+whether the merge that followed contradicted it, and an absent source read the
+same as a clean one. They now survive the session as bounded declarations in
+the completion store, `native_completion/v1` at
+`$OMH_HOME/runtime/completion/records.json`.
+
+**What is stored, and by whom.** A model declares a result through
+`omh_todo action=record` under a scope checkpoint (`action=set`, then
+`action=checkpoint` with `accepted=true` and the revision and environment
+fingerprints); OMH writes the row. A row carries `kind` (`verification`,
+`review`, `qa`), `verdict`, a bounded `summary`, `findings`, `claimed_source`
+(`model`, `host_exit`, `independent_review`, `ci`), `claimed_evidence_state`
+(`prepared_not_observed` or `observed`) and up to eight evidence references
+(receipt keys, artifact or CI-run ids). No transcript, prompt, log or raw
+command output is accepted. The wrapper guidance for the three lanes names
+this destination in one shared sentence, so a model that reaches a verdict is
+told where it goes and that it stays a declaration there; `code-review`'s
+entry is the review category's action and boundary plus that sentence,
+derived from the category rather than copied.
+
+**What the store refuses to say.** Every row is written and read back as
+`standing: model_declaration`, `observed: false`, whatever evidence state the
+writer claimed. A stored PASS is evidence that a PASS was claimed, exactly as
+a done mark on the plan todo is evidence that done was claimed. A row with
+`observed: true` on disk is malformed, not evidence.
+
+**How it reads.** In a session, `omh_todo action=recall`, bound by the host to
+the active profile and project. From the command line, over the home you name:
+
+```sh
+omh runtime verdict show [--session <id>] [--checkpoint <id>] [--revision <r> --environment <e>]
+```
+
+The payload is `native_completion_read/v1`, and carries `standing:
+model_declaration` and the claim boundary at its top level on every status,
+read or malformed, so a reader that stops at the first line is told what every
+row says. `store_state` is `absent` (no
+store), `empty` (a store with no checkpoints) or `present`; `sources` per kind
+is `absent`, `stale`, `declared_no_findings` or `declared_findings`, so "no
+record" and "a record that declared nothing found" never read alike, and a
+filter that matches nothing still reports the store present. Freshness is a
+judgment against a binding: with `--revision` and `--environment` a row is
+`current` only for that exact pair and inside the age cap, otherwise `stale`,
+and the checkpoint carries the `completion` projection whose status is always
+`not_verified`; without them every row is `unbound` and no completion
+judgment is made, because completeness against no binding is not a judgment.
+A half binding is refused. `--session` keeps the checkpoints a session
+declared or recorded into. A store that cannot be read is `malformed` and
+exits 1; a missing store exits 0 with `store_state: absent`, because nothing
+declared is not failed work. The read writes nothing and creates nothing.
+
+**Why staleness is a revision, not a clock.** A plan todo hides after 24 hours
+because a checklist nobody touched for a day is no longer the plan. A verdict
+is attached to a change, so it is current for the revision and environment it
+was declared against and stale the moment either moves, whether that takes a
+minute or a month; the 30-day cap only bounds a dossier whose revision nobody
+moves. The store never deletes: a stale row is still the row that was
+declared, and the read says so on the source rather than by dropping it.
+
+One limit worth knowing: a verdict needs a checkpoint, so a session with no
+accepted plan reaches the store in three calls (`set`, `checkpoint`,
+`record`), not one.
+
+## Plan Todo Evidence
+
+A done mark on the `omh_todo` plan is a declaration. The continuation rule used
+to stop a plan once every item carried one, so a run could mark an item done
+over a failed command, or tick several items off one command, and end its own
+loop. The stop criterion now reads a record for each done item instead of the
+mark.
+
+**What OMH binds.** The `omh_todo` tool binds items itself and ignores any
+`evidence`, `done_at` or `window_start` the writer sends. The binding fields
+are:
+
+- `window_start`: stamped on every item. The window opens at the item's own
+  last transition: when it is declared, when it goes from pending to active,
+  and when it leaves done. It does not open at whatever plan write happened
+  last.
+- `done_at`: the time of the done write. It is present only on a done item.
+- `evidence`: at the done write, the latest `terminal`, `write_file` or
+  `patch` call recorded inside the item's window that no other item holds.
+  It is read from the session's own Hermes `state.db` (`mode=ro`), ignoring
+  rows Hermes rewound, and bounded at the done write. It is stored as a typed
+  `{kind, ref}`, where `tool_call` names a `terminal` call and `file_write`
+  names a `write_file` or `patch` call, both by `tool_call_id`.
+
+One command closes at most one item: when a `set` marks three items done after
+one command, the first takes the call. A failed binding is sticky. It survives
+a reopen, and only a later call bound in its place replaces it.
+
+A `set` matches each item to the stored item with the same text. Items that
+share a text pair in order, the first with the first. A stored item's binding
+that no item of the new list continues (a rename, a split, a removal) is kept
+on the plan as `dropped_bindings`, with the time it was dropped.
+
+The `omh runtime todo set --items-json` path refuses all three fields, so a
+shell cannot write evidence. A hand edit of the record file is still possible
+for anything with write access to the OMH home. That is a stated limit, not a
+guarded path.
+
+This is association by time: it proves a command ran and how it ended, never
+that the command tested the item.
+
+`pr`, `ci_run` and `team_check` (`<team_id>/<unit_id>/attempt-<n>/check`) are
+accepted in the record so every lane writes one vocabulary, but none of them
+resolves yet. OMH makes no network call, so a PR or CI run closes an item
+through the `gh` call that observed it.
+
+**How an item closes.** Items are judged at each turn end (`pre_verify`), on
+the per-turn plan line, and in the tool's own result, in this order:
+
+1. A bound call that failed keeps the item failed: a nonzero exit, an `error`
+   field, or an `effect_disposition` of `none`.
+2. A bound call that passed closes the item when its result lies inside the
+   window. A pass is `exit_code` 0 for `tool_call`, and `bytes_written` or
+   `patch` `success: true` for `file_write` (the #1922 outcome rules). A
+   `file_write` does not close the item when a failing check stands: the
+   window's latest command that no other item holds failed, or rule 3
+   applies. Run a passing command after the write. A write still closes
+   docs-only work whose window held no failing command.
+3. Otherwise, if the plan dropped a binding that failed, an item opened at or
+   after the drop is failed. The dropped failure is resolved once such an
+   item closes on a passing command of its own. A rename or a split does not
+   carry the work past its failing check.
+4. Otherwise, if the latest evidence-capable call at or before the done mark
+   that no other item holds failed, the item is failed. A pass that another
+   item holds is skipped, so passes that answer for other items do not hide a
+   failure nothing was bound to.
+5. Otherwise, calls inside the window that are all held by other items leave
+   the item open.
+6. Otherwise, an empty window means a conversational item, and it closes.
+
+Any done item that does not close is `done_unverified`. It counts as open,
+including on a plan where every item says done. The plan line names it in
+plain words, for example "item 2 is marked done, but the command recorded for
+it failed". The tool result carries the reason code:
+
+| Reason | Meaning |
+| --- | --- |
+| `no_evidence` | Commands ran inside the item's window, and each one already holds another item. |
+| `evidence_failed` | The call bound to the item failed, a write closed it over a failing check, the plan dropped a failure that is still unresolved, or the latest call before the done mark that no other item holds failed. |
+| `evidence_unresolved` | No recorded result matches the reference. It is an unknown id, another session's call, a pass from before the window, a rewound row, the wrong tool for the kind, an unknown outcome, or a kind that does not resolve yet. |
+| `evidence_unreadable` | The store exists and could not be read. This is reported, never taken as evidence, and it does not keep the loop going: running a command cannot fix it. |
+
+A `done_unverified` item closes in one of two ways:
+
+- Run a passing command, then mark the item done again.
+- Give it a `blocked_reason`, which closes it as skipped.
+
+Rule 4 also catches an unrelated failing command, such as a `grep` that
+matched nothing, when it is the latest call no other item holds before a done
+mark. That can reach back past calls that each hold another item. The same
+two moves clear it. The stop criterion is still "every item closed, or the
+next item recorded blocked with its reason".
+
+**What time-based association cannot prevent.** These are stated limits, not
+guarded paths:
+
+- `clear` removes the plan together with its `dropped_bindings`. After a
+  `clear`, a failure bound before it is hidden once any passing call that no
+  item holds follows it.
+- With two items active at once, a pass or a failure can be bound to the item
+  that did not run it. The window cannot tell which item a command was for.
+- A passing call that no item holds, run after a failure that nothing was
+  bound to, answers for that failure.
+
+**What does not change.** A done item with no `done_at` and no `evidence`
+counts as done, as it always did. That covers an item marked done before this
+change, a CLI write, and a hand edit. A live plan picked up after
+`omh update` does not reopen. The continuation is still bounded by the host's
+`agent.max_verify_nudges` and by OMH's rule that a later attempt nudges only
+when the plan moved. Re-advancing a done item when no new command ran is not
+a write at all, so it neither restamps the plan nor buys another nudge. A
+finished plan still retires from the per-turn line after its linger window,
+and the HUD still shows every done mark as done. The `omh_todo` schema did
+not grow. The `done_unverified_plan` scenario in
+`src/maintenance/per_turn_context.py` measures the plan line with the
+evidence clause, and it sits under the per-turn limit.
+
+## Golden Examples
+
+See `examples/wrapper-golden/harness-quality.json` for deterministic examples
+covering coding handoff, planning, research, and clarification lanes.
+
+The business workflow pack adds non-coding harnesses such as
+`business-research`, `strategy-synthesis`, `meeting-facilitation`,
+`customer-insight-triage`, `ops-review`, `operating-rhythm`, `report-package`,
+`materials-package`, and `reliability-review`. These give wrappers the same
+evidence discipline for company work: research briefs are not fetched data,
+strategy briefs are not accepted decisions, meeting briefs are not meeting
+minutes, feedback triage is not a roadmap, ops review is not release or CI
+evidence, report packages are not binary decks or approvals, material packages
+are not binary exports, render/formula QA, uploads, approvals, or delivery, and
+reliability reviews are not proof that SLOs passed without metric or source
+evidence.

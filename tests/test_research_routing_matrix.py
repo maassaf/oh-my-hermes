@@ -1,0 +1,145 @@
+"""Regression matrix for research-lane routing.
+
+Derived from a 31-prompt bilingual probe audit (2026-07-27) that found nine
+misroutes for realistic reference/data-finding, docs-inquiry, and vendor-
+comparison requests. These fixtures lock the corrected behavior:
+
+- English research phrasings dispatch to the intended research skill.
+- Korean phrasings that previously surfaced FALSE candidates (visual-qa via
+  the generic token "문제", deliverable-package via the bare trigger "자료",
+  parallel-tools via "확인해줘") no longer do. Per the routing language policy
+  (docs/DIRECTION.md), Korean misses are not fixed by growing trigger tables;
+  the locked contract here is "no false deterministic candidate", with intent
+  resolution left to model selection over supplied candidates.
+- Negative controls stay in their non-research lanes.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from omh.routing.chat import route_chat_message
+from _route_owner import dispatched_or_asked, route_owner
+
+# Rows re-pinned to a clarify by shortlist-first routing (dispatch only on
+# strong evidence). Only these rows may pass as a clarify whose first
+# candidate is the expected skill; every other row must still dispatch.
+# Re-pinned 2026-09-26: the research-brief guard measured 0 right / 1 wrong
+# as a winner on the tuning set, under 3:1, so these rows ask with it first.
+_REPINNED_RESEARCH_PROMPTS_DISPATCH_TO_EXPECTED_SKILL = frozenset(
+    {
+        "compare onboarding analytics vendors",
+        "compare three onboarding analytics vendors using customer notes and confidence gaps",
+    }
+)
+_REPINNED_NEGATIVE_CONTROLS_STAY_OUT_OF_THE_RESEARCH_LANE = frozenset(
+    {
+        "evaluate agent performance on the benchmark suite",
+    }
+)
+
+
+DISPATCH_CASES: tuple[tuple[str, str], ...] = (
+    ("이 문제 해결을 위해 참고할만한 데이터 찾아줘", "source-finder"),
+    ("자료 찾아줘", "web-research"),
+    ("참고자료 찾아줘", "web-research"),
+    ("이 논문 PDF를 쉽게 설명해줘", "paper-learning"),
+    ("이 주제의 논문과 데이터셋을 찾아줘", "source-finder"),
+    ("find datasets for browser agent benchmarks", "source-finder"),
+    # `best-practice-research` retired into `web-research` (#1691); the three
+    # official/upstream lookup prompts now land on the target home.
+    ("what do the docs say about OAuth PKCE?", "web-research"),
+    ("check the official docs for the current API migration", "web-research"),
+    ("find best practices for browser performance", "web-research"),
+    ("compare onboarding analytics vendors", "research-brief"),
+    (
+        "compare three onboarding analytics vendors using customer notes and confidence gaps",
+        "research-brief",
+    ),
+    ("what is the current weather in Seoul?", "live-info-operator"),
+)
+
+# Prompts that previously surfaced a false deterministic candidate. The locked
+# contract is candidate hygiene, not dispatch: no non-research skill may be
+# offered for these research-shaped requests.
+NO_FALSE_CANDIDATE_CASES: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        "문제 해결에 참고할 자료/데이터 찾아줘",
+        frozenset({"visual-qa", "deliverable-package", "parallel-tools", "ultrawork"}),
+    ),
+    (
+        "관련 자료와 데이터를 찾아줘",
+        frozenset({"visual-qa", "deliverable-package", "parallel-tools", "ultrawork"}),
+    ),
+    (
+        "공식 문서에서 OAuth PKCE를 확인해줘",
+        frozenset({"visual-qa", "deliverable-package", "parallel-tools", "ultrawork"}),
+    ),
+)
+
+# Weak-but-correct: candidate must stay in the research lane even when the
+# score stays below the dispatch threshold.
+CANDIDATE_CASES: tuple[tuple[str, str], ...] = (
+    ("레퍼런스 조사해줘", "research"),
+)
+
+NEGATIVE_CONTROLS: tuple[tuple[str, str], ...] = (
+    ("check this checkout page for visual regressions", "visual-qa"),
+    ("fix the checkout bug in our app", "ultrawork"),
+    ("create a slide deck from these meeting notes", "materials-package"),
+    ("evaluate agent performance on the benchmark suite", "ultraperf"),
+    ("triage this customer feedback backlog", "feedback-triage"),
+    ("analyze this CSV and summarize anomalies", "data-analysis"),
+    ("발표 자료로 만들어줘", "materials-package"),
+)
+
+RESEARCH_SKILLS = frozenset(
+    {
+        "research",
+        "source-finder",
+        "web-research",
+        "research-brief",
+        "research-department",
+        "paper-learning",
+    }
+)
+
+
+class ResearchRoutingMatrixTest(unittest.TestCase):
+    def test_research_prompts_dispatch_to_expected_skill(self) -> None:
+        for prompt, expected_skill in DISPATCH_CASES:
+            with self.subTest(prompt=prompt):
+                decision = route_chat_message(prompt)
+                repinned = prompt in _REPINNED_RESEARCH_PROMPTS_DISPATCH_TO_EXPECTED_SKILL
+                self.assertTrue(dispatched_or_asked(decision, allow_clarify=repinned), decision)
+                self.assertEqual(route_owner(decision, allow_clarify=repinned), expected_skill, decision)
+
+    def test_research_shaped_prompts_never_surface_false_candidates(self) -> None:
+        for prompt, forbidden in NO_FALSE_CANDIDATE_CASES:
+            with self.subTest(prompt=prompt):
+                decision = route_chat_message(prompt)
+                self.assertNotIn(decision.get("selected_skill"), forbidden, decision)
+                self.assertNotIn(decision.get("candidate_skill"), forbidden, decision)
+                self.assertNotEqual(decision.get("action"), "dispatch_non_research", decision)
+
+    def test_below_threshold_research_prompts_keep_research_candidates(self) -> None:
+        for prompt, expected_candidate in CANDIDATE_CASES:
+            with self.subTest(prompt=prompt):
+                decision = route_chat_message(prompt)
+                self.assertEqual(decision.get("candidate_skill"), expected_candidate, decision)
+
+    def test_negative_controls_stay_out_of_the_research_lane(self) -> None:
+        for prompt, expected_skill in NEGATIVE_CONTROLS:
+            with self.subTest(prompt=prompt):
+                decision = route_chat_message(prompt)
+                # A weak-evidence clarify names its owner as the candidate.
+                self.assertEqual(route_owner(decision, allow_clarify=prompt in _REPINNED_NEGATIVE_CONTROLS_STAY_OUT_OF_THE_RESEARCH_LANE), expected_skill, decision)
+                self.assertNotIn(route_owner(decision, allow_clarify=prompt in _REPINNED_NEGATIVE_CONTROLS_STAY_OUT_OF_THE_RESEARCH_LANE), RESEARCH_SKILLS, decision)
+
+    def test_deliverables_lane_still_reachable_after_trigger_cleanup(self) -> None:
+        decision = route_chat_message("자료 첨부해줘")
+        self.assertEqual(decision.get("candidate_skill"), "deliverable-package", decision)
+
+
+if __name__ == "__main__":
+    unittest.main()

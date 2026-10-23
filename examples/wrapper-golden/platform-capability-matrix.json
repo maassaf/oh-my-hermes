@@ -1,0 +1,1501 @@
+{
+  "schema_version": "omh_platform_capability_matrix/v1",
+  "profiles": [
+    {
+      "platform_id": "telegram",
+      "transport_source": "telegram",
+      "render_profile": "limited_markdown",
+      "format_family": "telegram_plain_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 3700,
+        "hard_limit_chars": 3900
+      },
+      "limit_provenance": "verified",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "discord",
+      "transport_source": "discord",
+      "render_profile": "limited_markdown",
+      "format_family": "discord_markdown",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1700,
+        "hard_limit_chars": 1900
+      },
+      "limit_provenance": "verified",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "whatsapp",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "whatsapp/plain_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "slack",
+      "transport_source": "slack",
+      "render_profile": "limited_markdown",
+      "format_family": "slack_mrkdwn",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 2700,
+        "hard_limit_chars": 2900
+      },
+      "limit_provenance": "verified",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "signal",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "signal/body_ranges",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "mattermost",
+      "transport_source": "generic",
+      "render_profile": "rich_markdown",
+      "format_family": "mattermost/commonmark",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "matrix",
+      "transport_source": "generic",
+      "render_profile": "rich_markdown",
+      "format_family": "matrix/matrix_html",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "home_assistant",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "home_assistant/structured_json",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "email",
+      "transport_source": "generic",
+      "render_profile": "rich_markdown",
+      "format_family": "email/mime",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "twilio_sms",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "twilio_sms/plain_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "dingtalk",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "dingtalk/card_json",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "wecom_websocket",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "wecom/card_json",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "wecom_callback",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "wecom/card_json",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "wechat_ilink",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "wechat_ilink/plain_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "feishu_lark",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "feishu_lark/post_card_json",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "imessage_bluebubbles",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "imessage_bluebubbles/attributed_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "qqbot",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "qqbot/markdown",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "tencent_yuanbao",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "tencent_yuanbao/plain_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "microsoft_teams",
+      "transport_source": "generic",
+      "render_profile": "rich_markdown",
+      "format_family": "microsoft_teams/adaptive_card",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "line",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "line/flex_message",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "simplex",
+      "transport_source": "generic",
+      "render_profile": "limited_markdown",
+      "format_family": "simplex/plain_text",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "api_server",
+      "transport_source": "generic",
+      "render_profile": "rich_markdown",
+      "format_family": "api_server/structured_json",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    },
+    {
+      "platform_id": "buzz",
+      "transport_source": "hermes",
+      "render_profile": "rich_markdown",
+      "format_family": "buzz/markdown",
+      "field_provenance": {
+        "transport_source": "profile_registry",
+        "render_profile": "profile_registry",
+        "format_family": "approved_architecture_user_surface"
+      },
+      "limits": {
+        "max_recommended_chars": 1600,
+        "hard_limit_chars": 1800
+      },
+      "limit_provenance": "conservative_default",
+      "capabilities": {
+        "media": {
+          "images": false,
+          "files": false,
+          "voice": false,
+          "video": false,
+          "captions": false
+        },
+        "reply": {
+          "threads": false,
+          "quotes": false,
+          "edit": false,
+          "delete": false
+        },
+        "reactions": {
+          "native": false,
+          "custom_emoji": false
+        },
+        "actions": {
+          "buttons": false,
+          "forms": false,
+          "typing_indicator": false
+        }
+      },
+      "capability_provenance": {
+        "media": {
+          "images": "unverified_default_false",
+          "files": "unverified_default_false",
+          "voice": "unverified_default_false",
+          "video": "unverified_default_false",
+          "captions": "unverified_default_false"
+        },
+        "reply": {
+          "threads": "unverified_default_false",
+          "quotes": "unverified_default_false",
+          "edit": "unverified_default_false",
+          "delete": "unverified_default_false"
+        },
+        "reactions": {
+          "native": "unverified_default_false",
+          "custom_emoji": "unverified_default_false"
+        },
+        "actions": {
+          "buttons": "unverified_default_false",
+          "forms": "unverified_default_false",
+          "typing_indicator": "unverified_default_false"
+        }
+      },
+      "claim_boundary": "adapter_owns_transport_core_owns_response"
+    }
+  ],
+  "claim_boundary": "This matrix ships core profile defaults and provenance only; it is not live vendor, transport, authentication, posting, or delivery evidence."
+}

@@ -1,0 +1,25 @@
+skills:
+  external_dirs:
+    - ~/.omh/skills
+
+# Compression resilience. Hermes cannot recover a session when
+# `auxiliary.compression` points at a single unreachable endpoint: the main
+# model is dead, the smaller fallback model rejects the oversized prompt, and
+# the compressor that would shrink it lives on the same dead endpoint.
+# Give the compressor its own fallback chain.
+#
+# `omh setup` / `omh apply` add `auxiliary.compression.fallback_chain`
+# automatically when compression is pinned to one provider and the config
+# already lists other fallback providers. An existing user-authored
+# `fallback_chain` is never overwritten.
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.5
+
+auxiliary:
+  compression:
+    provider: sglang_proxy
+    model: glm-5.2-ultrafast
+    fallback_chain:
+      - provider: openai-codex
+        model: gpt-5.5

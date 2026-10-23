@@ -1,0 +1,624 @@
+from __future__ import annotations
+
+import json
+import tomllib
+import unittest
+from pathlib import Path
+
+from _cli_harness import run_cli
+from _local_package import load_local_package
+
+load_local_package()
+
+from omh.capabilities.families import capability_family_projection, family_for_workflow
+from omh.capabilities.registry import capability_snapshot, capability_summary, inspect_capability, list_capabilities
+from omh.capabilities.schema import normalize_capability_section
+from omh.capabilities.skills import skill_capabilities
+from omh.skills.catalog import builtin_definitions, installable_skill_names
+
+
+LEGACY_ROLE_ALIASES = {
+    "coding-handoff": "handoff-guide",
+    "planning-lead": "planner",
+    "research-lead": "researcher",
+    "review-gate": "reviewer",
+}
+
+
+class CapabilityManifestTests(unittest.TestCase):
+    def test_capabilities_root_defaults_to_summary_for_operator_smoke_checks(self) -> None:
+        status, stdout, stderr = run_cli(["capabilities", "--json"], output_json=False)
+
+        self.assertEqual(stderr, "")
+        self.assertEqual(status, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "omh_capability_summary/v1")
+        self.assertGreaterEqual(payload["totals"]["skills"], 1)
+
+    def test_capability_snapshot_is_deterministic_and_boundary_safe(self) -> None:
+        first = capability_snapshot()
+        second = capability_snapshot()
+        first["summary"]["skills"] = -1
+        first["skills"].clear()
+        third = capability_snapshot()
+
+        self.assertEqual(second, third)
+        self.assertEqual(third["schema_version"], "omh_capability_manifest/v1")
+        self.assertEqual(third["determinism"], "static_projection_no_runtime_clock")
+        self.assertEqual(third["omh_awareness"]["schema_version"], "omh_awareness/v1")
+        self.assertIn("workflow-shaped requests", third["omh_awareness"]["purpose"])
+        self.assertIn("Hermes-native workflow pack", third["omh_awareness"]["product_context"])
+        self.assertIn("every OMH skill", third["omh_awareness"]["all_skill_context_rule"])
+        self.assertIn("generic tool can render or execute", third["omh_awareness"]["all_skill_context_rule"])
+        self.assertIn("Every generated workflow skill", third["omh_awareness"]["skill_coverage"])
+        self.assertIn("meeting notes -> meeting-brief", " ".join(third["omh_awareness"]["cross_lane_examples"]))
+        self.assertIn("img-summary", json.dumps(third["omh_awareness"], sort_keys=True))
+        self.assertGreaterEqual(third["summary"]["skills"], 30)
+        self.assertGreaterEqual(third["summary"]["agent_roles"], 8)
+        self.assertGreaterEqual(third["summary"]["playbooks"], 20)
+        self.assertIn("no runtime_topology schema in this PR", third["non_goals"])
+        self.assertNotIn("runtime_topology", third)
+        self.assertIn("Prepared OMH capability", third["evidence_boundaries"]["prepared_is_not"])
+
+    def test_awareness_lanes_cover_every_catalog_workflow_surface(self) -> None:
+        awareness = capability_snapshot()["omh_awareness"]
+        lane_skills = {
+            str(skill)
+            for lane in awareness["lanes"]
+            for skill in lane["skills"]
+        }
+        generated_skills = set(installable_skill_names())
+        catalog_surfaces = {definition.name for definition in builtin_definitions()}
+        conceptual_surfaces = {"request-to-handoff", "executor selection", "coding runtime handoff", "dynamic-workflow"}
+
+        uncovered = sorted(generated_skills - lane_skills)
+        self.assertFalse(
+            uncovered,
+            "Installable skill(s) missing from awareness lanes: "
+            f"{uncovered}. For each, add the skill name to the matching lane "
+            "'skills' list inside awareness_primer_payload() in "
+            "src/plugin_bundle/omh/awareness.py, keeping the curated lane order.",
+        )
+        self.assertLessEqual(lane_skills - catalog_surfaces, conceptual_surfaces)
+
+        from omh.plugin_bundle.omh.awareness import _WORKFLOW_CONTEXT_CARD_BY_WORKFLOW
+
+        # The router itself and the cancel control surface intentionally have
+        # no workflow context card.
+        context_card_exempt = {"oh-my-hermes", "cancel"}
+        missing_context_cards = sorted(
+            skill
+            for skill in lane_skills & generated_skills
+            if skill not in _WORKFLOW_CONTEXT_CARD_BY_WORKFLOW and skill not in context_card_exempt
+        )
+        self.assertFalse(
+            missing_context_cards,
+            "Lane skill(s) missing a workflow context card lane: "
+            f"{missing_context_cards}. Add '<skill>': '<lane_id>' to "
+            "_WORKFLOW_CONTEXT_CARD_BY_WORKFLOW in "
+            "src/plugin_bundle/omh/awareness.py (use the lane the skill "
+            "belongs to in awareness_primer_payload()).",
+        )
+
+    def test_ulw_context_projects_through_awareness_and_default_capability_family(self) -> None:
+        from omh.plugin_bundle.omh.awareness import (
+            _DIRECT_WORKFLOW_NEXT_ACTIONS,
+            _ULW_ENGINE_WORKFLOWS,
+            _canonical_workflow_by_display_name,
+            awareness_primer_payload,
+            workflow_context_card_for_workflow,
+        )
+
+        awareness = awareness_primer_payload()
+        lanes = {lane["id"]: lane for lane in awareness["lanes"]}
+        self.assertEqual(
+            sum("context" in lane["skills"] for lane in awareness["lanes"]),
+            1,
+        )
+        self.assertIn("context", lanes["intent_to_plan"]["skills"])
+        self.assertEqual(workflow_context_card_for_workflow("context")["id"], "intent_to_plan")
+        self.assertEqual(_DIRECT_WORKFLOW_NEXT_ACTIONS["context"], "prepare_project_terms_context")
+        self.assertIn("context", _ULW_ENGINE_WORKFLOWS)
+        self.assertEqual(_canonical_workflow_by_display_name()["ulw-context"], "context")
+
+        projection = capability_family_projection()
+        self.assertEqual(projection["workflow_to_family"]["context"], "plan_and_decide")
+        family = next(item for item in projection["families"] if item["id"] == "plan_and_decide")
+        self.assertEqual(family["primary_workflows"].count("context"), 1)
+
+    def test_capability_families_are_user_facing_front_door_projection(self) -> None:
+        projection = capability_family_projection()
+        families = {family["id"]: family for family in projection["families"]}
+
+        self.assertEqual(projection["schema_version"], "omh_capability_families/v1")
+        self.assertEqual(
+            [family["label"] for family in projection["families"]],
+            [
+                "Plan and decide",
+                "Learn and gather",
+                "Retain knowledge",
+                "Create materials and visuals",
+                "Delegate coding and ship",
+                "Operate and observe",
+            ],
+        )
+        self.assertIn("deep-interview", families["plan_and_decide"]["primary_workflows"])
+        self.assertIn("paper-learning", families["learn_and_gather"]["primary_workflows"])
+        self.assertIn("data-analysis", families["learn_and_gather"]["primary_workflows"])
+        self.assertIn("wiki", families["retain_knowledge"]["primary_workflows"])
+        self.assertIn("img-summary", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("content-operator", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("frontend", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("accessibility-audit", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("visual-qa", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertNotIn("wiki", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("ultrawork", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("executor-runtime-readiness", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("dynamic-workflow", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("build-failure-triage", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("verification-gate", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("doctor", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("github-event-ops", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("github-issue-intake", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("agent-board", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("gateway-intent-card", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("voice-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("browser-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("workspace-file-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("command-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("connector-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("live-info-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("workspace-audit", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("production-audit", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("agent-evaluation", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("rules-distill", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("agent-debug", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("instinct-ledger", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("skill-scout", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("skill-health", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("toolbelt-readiness", families["operate_and_observe"]["primary_workflows"])
+        self.assertEqual(projection["workflow_to_family"]["img-summary"], "create_materials_and_visuals")
+        self.assertEqual(projection["workflow_to_family"]["content-operator"], "create_materials_and_visuals")
+        self.assertEqual(projection["workflow_to_family"]["frontend"], "create_materials_and_visuals")
+        self.assertEqual(projection["workflow_to_family"]["accessibility-audit"], "create_materials_and_visuals")
+        self.assertEqual(projection["workflow_to_family"]["visual-qa"], "create_materials_and_visuals")
+        self.assertEqual(projection["workflow_to_family"]["wiki"], "retain_knowledge")
+        self.assertEqual(projection["workflow_to_family"]["paper-learning"], "learn_and_gather")
+        self.assertEqual(projection["workflow_to_family"]["data-analysis"], "learn_and_gather")
+        self.assertEqual(projection["workflow_to_family"]["ultrawork"], "delegate_coding_and_ship")
+        self.assertEqual(projection["workflow_to_family"]["executor-runtime-readiness"], "delegate_coding_and_ship")
+        self.assertEqual(projection["workflow_to_family"]["dynamic-workflow"], "delegate_coding_and_ship")
+        self.assertEqual(projection["workflow_to_family"]["build-failure-triage"], "delegate_coding_and_ship")
+        self.assertEqual(projection["workflow_to_family"]["verification-gate"], "delegate_coding_and_ship")
+        self.assertEqual(projection["workflow_to_family"]["github-event-ops"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["github-issue-intake"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["agent-board"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["gateway-intent-card"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["voice-operator"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["browser-operator"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["workspace-file-operator"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["command-operator"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["connector-operator"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["workspace-audit"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["production-audit"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["agent-evaluation"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["rules-distill"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["agent-debug"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["failure-signal-audit"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["instinct-ledger"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["skill-scout"], "operate_and_observe")
+        self.assertEqual(projection["workflow_to_family"]["skill-health"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("wiki")["id"], "retain_knowledge")
+        self.assertEqual(family_for_workflow("code-review")["id"], "delegate_coding_and_ship")
+        self.assertEqual(family_for_workflow("executor-runtime-readiness")["id"], "delegate_coding_and_ship")
+        self.assertEqual(family_for_workflow("dynamic-workflow")["id"], "delegate_coding_and_ship")
+        self.assertEqual(family_for_workflow("accessibility-audit")["id"], "create_materials_and_visuals")
+        self.assertEqual(family_for_workflow("workflow-learning")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("gateway-intent-card")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("voice-operator")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("browser-operator")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("workspace-file-operator")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("command-operator")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("connector-operator")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("agent-debug")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("failure-signal-audit")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("instinct-ledger")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("skill-scout")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("skill-health")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("toolbelt-readiness")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("workspace-audit")["id"], "operate_and_observe")
+        self.assertEqual(family_for_workflow("verification-gate")["id"], "delegate_coding_and_ship")
+        self.assertEqual(family_for_workflow("build-failure-triage")["id"], "delegate_coding_and_ship")
+        self.assertIn("Codex", families["delegate_coding_and_ship"]["executor_choices"])
+        self.assertIn("Claude Code", families["delegate_coding_and_ship"]["executor_choices"])
+        self.assertIn("Hermes", families["delegate_coding_and_ship"]["executor_choices"])
+        self.assertIn("executor dispatch", families["delegate_coding_and_ship"]["not_evidence_until_observed"])
+        self.assertIn("not observed execution", projection["claim_boundary"])
+        seen_workflows: dict[str, str] = {}
+        for family in projection["families"]:
+            family_id = family["id"]
+            for workflow in family["primary_workflows"]:
+                self.assertNotIn(workflow, seen_workflows, f"{workflow} appears in multiple families")
+                seen_workflows[workflow] = family_id
+                self.assertEqual(projection["workflow_to_family"][workflow], family_id)
+
+    def test_capability_sections_have_expected_ids(self) -> None:
+        listing = list_capabilities()
+        sections = {section["section"]: section["ids"] for section in listing["sections"]}
+
+        self.assertIn("omh_awareness", sections["omh_awareness"])
+        self.assertIn("handoff-guide", sections["agent_roles"])
+        self.assertIn("ultrawork", sections["skills"])
+        self.assertIn("omh_capabilities", sections["hooks"])
+        self.assertIn("executor_session_handoff", sections["orchestration_patterns"])
+        self.assertIn("hermes_coding_team_path", sections["orchestration_patterns"])
+        self.assertIn("request-to-handoff", sections["playbooks"])
+        self.assertIn("research-department", sections["playbooks"])
+        self.assertIn("ultrawork", sections["tool_requirements"])
+        self.assertEqual(normalize_capability_section("roles"), "agent_roles")
+        self.assertEqual(normalize_capability_section("patterns"), "orchestration_patterns")
+        self.assertEqual(normalize_capability_section("tools"), "tool_requirements")
+
+    def test_capability_summary_is_human_facing_catalog_context(self) -> None:
+        summary = capability_summary()
+        summary["capability_families"].clear()
+        summary["totals"]["skills"] = -1
+        summary = capability_summary()
+        families = {family["id"]: family for family in summary["capability_families"]}
+        lanes = {lane["id"]: lane for lane in summary["lanes"]}
+        context_cards = {card["id"]: card for card in summary["workflow_context_cards"]}
+
+        self.assertEqual(summary["schema_version"], "omh_capability_summary/v1")
+        self.assertIn("without requiring shell catalog approval", summary["purpose"])
+        self.assertIn("Normal users talk to Hermes", summary["chat_rule"])
+        self.assertIn("capability families", " ".join(summary["direct_response_guidance"]))
+        self.assertEqual(summary["section_aliases"]["roles"], "agent_roles")
+        self.assertEqual(summary["section_aliases"]["tools"], "tool_requirements")
+        self.assertIn("Prepared OMH capability", summary["evidence_boundary"])
+        self.assertEqual(families["plan_and_decide"]["label"], "Plan and decide")
+        self.assertIn("paper-learning", families["learn_and_gather"]["primary_workflows"])
+        self.assertIn("data-analysis", families["learn_and_gather"]["primary_workflows"])
+        self.assertIn("wiki", families["retain_knowledge"]["primary_workflows"])
+        self.assertIn("img-summary", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("frontend", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("accessibility-audit", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("visual-qa", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertNotIn("wiki", families["create_materials_and_visuals"]["primary_workflows"])
+        self.assertIn("Claude Code", families["delegate_coding_and_ship"]["executor_choices"])
+        self.assertIn("executor-runtime-readiness", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("build-failure-triage", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("verification-gate", families["delegate_coding_and_ship"]["primary_workflows"])
+        self.assertIn("github-event-ops", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("github-issue-intake", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("agent-board", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("voice-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("browser-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("workspace-file-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("command-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("connector-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("live-info-operator", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("workspace-audit", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("instinct-ledger", families["operate_and_observe"]["primary_workflows"])
+        self.assertIn("toolbelt-readiness", families["operate_and_observe"]["primary_workflows"])
+        self.assertEqual(summary["workflow_to_family"]["code-review"], "delegate_coding_and_ship")
+        self.assertEqual(summary["workflow_to_family"]["executor-runtime-readiness"], "delegate_coding_and_ship")
+        self.assertEqual(summary["workflow_to_family"]["accessibility-audit"], "create_materials_and_visuals")
+        self.assertEqual(summary["workflow_to_family"]["content-operator"], "create_materials_and_visuals")
+        self.assertEqual(summary["workflow_to_family"]["build-failure-triage"], "delegate_coding_and_ship")
+        self.assertEqual(summary["workflow_to_family"]["verification-gate"], "delegate_coding_and_ship")
+        self.assertEqual(summary["workflow_to_family"]["github-event-ops"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["github-issue-intake"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["agent-board"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["voice-operator"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["browser-operator"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["workspace-file-operator"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["command-operator"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["connector-operator"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["live-info-operator"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["workspace-audit"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["instinct-ledger"], "operate_and_observe")
+        self.assertEqual(summary["workflow_to_family"]["wiki"], "retain_knowledge")
+        self.assertEqual(summary["workflow_to_family"]["data-analysis"], "learn_and_gather")
+        self.assertEqual(lanes["intent_to_plan"]["owner_role"], "planner")
+        self.assertEqual(lanes["retained_knowledge"]["owner_role"], "memory-keeper")
+        self.assertIn("loop", lanes["intent_to_plan"]["primary_skills"])
+        self.assertIn("wiki", lanes["retained_knowledge"]["primary_skills"])
+        self.assertIn("img-summary", lanes["materials_and_visuals"]["primary_skills"])
+        self.assertIn("frontend", lanes["materials_and_visuals"]["primary_skills"])
+        self.assertIn("accessibility-audit", lanes["materials_and_visuals"]["primary_skills"])
+        self.assertIn("visual-qa", lanes["materials_and_visuals"]["primary_skills"])
+        self.assertNotIn("wiki", lanes["materials_and_visuals"]["primary_skills"])
+        self.assertIn("research-department", lanes["research_and_ops"]["primary_skills"])
+        self.assertIn("workspace-audit", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("agent-evaluation", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("agent-debug", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("failure-signal-audit", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("instinct-ledger", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("skill-scout", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("skill-health", lanes["automation_and_status"]["primary_skills"])
+        self.assertIn("build-failure-triage", lanes["coding_handoff"]["primary_skills"])
+        self.assertIn("verification-gate", lanes["coding_handoff"]["primary_skills"])
+        self.assertIn("request-to-handoff", {item["id"] for item in lanes["intent_to_plan"]["representative_playbooks"]})
+        self.assertIn("materials-processing", {item["id"] for item in lanes["materials_and_visuals"]["representative_playbooks"]})
+        self.assertTrue(lanes["coding_handoff"]["wrapper_actions"])
+        self.assertIn("feedback-triage", context_cards["research_and_ops"]["representative_workflows"])
+        self.assertEqual(context_cards["research_and_ops"]["label"], "Research and ops")
+        self.assertIn("Payment failures keep coming up", context_cards["research_and_ops"]["user_examples"])
+        self.assertIn("data-analysis", context_cards["research_and_ops"]["representative_workflows"])
+        self.assertIn("wiki", context_cards["retained_knowledge"]["representative_workflows"])
+        self.assertIn("write/query proof", context_cards["retained_knowledge"]["first_response_shape"])
+        self.assertIn("img-summary", context_cards["materials_and_visuals"]["representative_workflows"])
+        self.assertIn("frontend", context_cards["materials_and_visuals"]["representative_workflows"])
+        self.assertIn("accessibility-audit", context_cards["materials_and_visuals"]["representative_workflows"])
+        self.assertIn("visual-qa", context_cards["materials_and_visuals"]["representative_workflows"])
+        self.assertIn("content-operator", context_cards["materials_and_visuals"]["representative_workflows"])
+        self.assertIn("accessibility", context_cards["materials_and_visuals"]["first_response_shape"])
+        self.assertIn("revise/copy/generate/record", context_cards["materials_and_visuals"]["first_response_shape"])
+        self.assertIn("workspace-audit", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("gateway-intent-card", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("voice-operator", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("workspace-file-operator", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("command-operator", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("connector-operator", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("live-info-operator", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("rules-distill", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("agent-debug", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("failure-signal-audit", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("audit", context_cards["automation_and_status"]["first_response_shape"])
+        self.assertIn("instinct-ledger", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("skill-scout", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("skill-health", context_cards["automation_and_status"]["representative_workflows"])
+        self.assertIn("build-failure-triage", context_cards["coding_handoff"]["representative_workflows"])
+        self.assertIn("implementation", context_cards["coding_handoff"]["not_evidence_until_observed"])
+
+    def test_the_skill_payload_carries_no_field_that_restates_another(self) -> None:
+        """Every skill item is stamped 103 times into a budgeted payload.
+
+        `display_name` was `id`, `exposure` was `surface_exposure`, and
+        `tool_requirements` was a constant stub superseded by the real manifest
+        one key away in the same snapshot. None of them carried information, and
+        together they cost about 16.5k characters of a shared budget that had
+        under 2k left. Re-adding any of them is the regression this catches; the
+        surviving twin is named so the fix is obvious.
+        """
+        skills = skill_capabilities()
+        self.assertTrue(skills)
+        twin = {
+            "display_name": "id",
+            "exposure": "surface_exposure",
+            "tool_requirements": "the snapshot's own tool_requirements section",
+        }
+        for item in skills:
+            for removed, survivor in twin.items():
+                with self.subTest(skill=item["id"], field=removed):
+                    self.assertNotIn(removed, item, f"use {survivor} instead of {removed}")
+
+    def test_capability_inspect_finds_skill_and_role_without_runtime_claim(self) -> None:
+        skill = inspect_capability("ultrawork", section="skills")["capability"]
+        wiki_skill = inspect_capability("wiki", section="skills")["capability"]
+        ops_surface = inspect_capability("ops-observability-card", section="skills")["capability"]
+        codegraph_skill = inspect_capability("codegraph-refresh", section="skills")["capability"]
+        agent_debug_skill = inspect_capability("agent-debug", section="skills")["capability"]
+        instinct_ledger_skill = inspect_capability("instinct-ledger", section="skills")["capability"]
+        awareness = inspect_capability("omh_awareness", section="omh_awareness")["capability"]
+        role = inspect_capability("handoff-guide", section="agent_roles")["capability"]
+        playbook = inspect_capability("request-to-handoff", section="playbooks")["capability"]
+        legacy_role = inspect_capability("coding-handoff", section="agent_roles")
+
+        self.assertEqual(skill["schema_version"], "skill_capability/v1")
+        self.assertIn("prepared_not_observed", skill["evidence_boundary"])
+        self.assertEqual(skill["awareness_lane"], "coding_handoff")
+        self.assertIn("Use `ultrawork`", skill["workflow_routing_hint"])
+        self.assertEqual(wiki_skill["awareness_lane"], "retained_knowledge")
+        self.assertIn("Retained knowledge", wiki_skill["workflow_routing_hint"])
+        self.assertIn("every OMH skill", skill["workflow_context_rule"])
+        self.assertIn("generic tool can render or execute", skill["workflow_context_rule"])
+        self.assertIn("Normal users talk to Hermes", skill["chat_rule"])
+        self.assertIn("missing", skill["fallback_rule"])
+        self.assertIn("omh_context", awareness["tool_hints"][0])
+        self.assertIn("omh_capabilities", " ".join(awareness["tool_hints"]))
+        self.assertIn("accepted plan -> ultrawork delivery cycle -> coding handoff", " ".join(skill["cross_lane_examples"]))
+        self.assertEqual(ops_surface["surface_exposure"], "workflow_skill")
+        self.assertEqual(awareness["schema_version"], "omh_awareness/v1")
+        # The rule discriminates by the shape of the result, not by a list of
+        # subjects. It used to enumerate planning/research/knowledge/ops/
+        # materials/visuals/automation/coding/review/status/loops and tell the
+        # model to prefer OMH for all of them, which named no position at all.
+        self.assertIn("outlive the message and carry an evidence trail", awareness["first_turn_rule"])
+        self.assertIn("native skills and tools are correct", awareness["first_turn_rule"])
+        self.assertNotIn("consider OMH before generic", awareness["first_turn_rule"])
+        self.assertIn("meeting-brief", json.dumps(awareness, sort_keys=True))
+        self.assertIn("capability manifest", awareness["context_surfaces"])
+        self.assertTrue(ops_surface["install_visibility"])
+        self.assertFalse(ops_surface["compatibility_alias"])
+        self.assertIn("preferred_usage", ops_surface)
+        self.assertIn("secret values", " ".join(codegraph_skill["safety_rules"]))
+        self.assertIn("codebase-onboarding", " ".join(codegraph_skill["quality_bar"]))
+        self.assertTrue(codegraph_skill["artifact_expectations"])
+        self.assertIn("codegraph", " ".join(codegraph_skill["artifact_expectations"]))
+        self.assertIn("agent_debug_report/v1", agent_debug_skill["artifact_expectations"])
+        self.assertIn("instinct_candidate/v1", instinct_ledger_skill["artifact_expectations"])
+        self.assertIn("instinct_export_review/v1", " ".join(instinct_ledger_skill["expected_outputs"]))
+        self.assertIn("+", " ".join(instinct_ledger_skill["triggers"]))
+        self.assertEqual(role["runtime_claim"], "descriptor_not_runtime_agent")
+        self.assertIn("OMH workflow-layer responsibility context", role["workflow_context_rule"])
+        self.assertIn("Normal users talk to Hermes", role["chat_rule"])
+        self.assertIn("prepared guidance only", role["role_boundary_rule"])
+        self.assertIn("executor_session_handoff", role["default_orchestration_patterns"])
+        self.assertEqual(playbook["schema_version"], "playbook_capability/v1")
+        self.assertEqual(playbook["runtime_claim"], "playbook_guidance_not_execution")
+        self.assertIn("situation-level workflow maps", playbook["workflow_context_rule"])
+        self.assertIn("Normal users talk to Hermes", playbook["chat_rule"])
+        self.assertIn("route_request", playbook["pipeline"])
+        self.assertEqual(playbook["primary_owner_role"], "planner")
+        self.assertIn("handoff-guide", playbook["stage_owners"])
+        self.assertIn("show_recommendation", playbook["available_wrapper_actions"])
+        self.assertEqual(playbook["first_stage"]["id"], "route_request")
+        self.assertEqual(playbook["first_stage"]["contract"], "playbook_recommendation/v1")
+        self.assertIn("Prepared OMH capability", playbook["prepared_is_not"])
+        self.assertEqual(legacy_role["requested_id"], "coding-handoff")
+        self.assertEqual(legacy_role["resolved_id"], "handoff-guide")
+        self.assertEqual(legacy_role["capability"]["id"], "handoff-guide")
+
+        for alias, expected_role in LEGACY_ROLE_ALIASES.items():
+            with self.subTest(alias=alias):
+                inspected = inspect_capability(alias, section="agent_roles")
+                self.assertEqual(inspected["requested_id"], alias)
+                self.assertEqual(inspected["resolved_id"], expected_role)
+                self.assertEqual(inspected["capability"]["id"], expected_role)
+
+        with self.assertRaisesRegex(ValueError, "capability not found"):
+            inspect_capability("retained-cognition", section="agent_roles")
+
+    def test_cli_export_list_and_inspect(self) -> None:
+        status, stdout, stderr = run_cli(["capabilities", "export", "--json"], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        self.assertEqual(stderr, "")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "omh_capability_manifest/v1")
+
+        status, stdout, stderr = run_cli(["capabilities", "list"], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("OMH capabilities", stdout)
+        self.assertIn("For machine-readable output", stdout)
+
+        status, stdout, stderr = run_cli(["capabilities", "summary"], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        self.assertIn("OMH capability summary", stdout)
+        self.assertIn("Families are the user-facing front door", stdout)
+        self.assertIn("Materials and visual summaries", stdout)
+
+        status, stdout, stderr = run_cli(["capabilities", "summary", "--json"], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(summary["schema_version"], "omh_capability_summary/v1")
+        self.assertIn("roles", summary["section_aliases"])
+
+        status, stdout, stderr = run_cli(["capabilities", "inspect", "executor_session_handoff", "--json"], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        inspected = json.loads(stdout)
+        self.assertEqual(inspected["section"], "orchestration_patterns")
+        self.assertEqual(inspected["capability"]["owner_role"], "handoff-guide")
+
+        status, stdout, stderr = run_cli(
+            ["capabilities", "inspect", "handoff-guide", "--section", "roles", "--json"],
+            output_json=False,
+        )
+
+        self.assertEqual(status, 0, stderr)
+        role = json.loads(stdout)
+        self.assertEqual(role["section"], "agent_roles")
+        self.assertEqual(role["resolved_id"], "handoff-guide")
+
+        status, stdout, stderr = run_cli(["capabilities", "list", "--section", "agents", "--json"], output_json=False)
+
+        self.assertEqual(status, 0, stderr)
+        role_list = json.loads(stdout)
+        self.assertEqual(role_list["sections"][0]["section"], "agent_roles")
+        self.assertIn("planner", role_list["sections"][0]["ids"])
+
+        status, stdout, stderr = run_cli(
+            ["capabilities", "inspect", "request-to-handoff", "--section", "playbooks", "--json"],
+            output_json=False,
+        )
+
+        self.assertEqual(status, 0, stderr)
+        playbook = json.loads(stdout)
+        self.assertEqual(playbook["section"], "playbooks")
+        self.assertEqual(playbook["capability"]["schema_version"], "playbook_capability/v1")
+        self.assertIn("status_card", playbook["capability"]["pipeline"])
+        self.assertIn("first_stage", playbook["capability"])
+
+        for alias, expected_role in LEGACY_ROLE_ALIASES.items():
+            with self.subTest(alias=alias):
+                status, stdout, stderr = run_cli(
+                    ["capabilities", "inspect", alias, "--section", "agent_roles", "--json"],
+                    output_json=False,
+                )
+
+                self.assertEqual(status, 0, stderr)
+                legacy = json.loads(stdout)
+                self.assertEqual(legacy["requested_id"], alias)
+                self.assertEqual(legacy["resolved_id"], expected_role)
+                self.assertEqual(legacy["capability"]["id"], expected_role)
+
+        status, stdout, stderr = run_cli(
+            ["capabilities", "inspect", "retained-cognition", "--section", "agent_roles", "--json"],
+            output_json=False,
+        )
+
+        self.assertNotEqual(status, 0)
+        self.assertIn("capability not found: retained-cognition", stderr)
+
+    def test_package_metadata_includes_capabilities_package(self) -> None:
+        pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        packages = pyproject["tool"]["setuptools"]["packages"]
+        package_dir = pyproject["tool"]["setuptools"]["package-dir"]
+        source_root = Path("src")
+
+        self.assertIn("omh", packages)
+        self.assertIn("omh.capabilities", packages)
+        self.assertIn("omh.routing", packages)
+        self.assertEqual(package_dir["omh"], "src/omh")
+        self.assertEqual(package_dir["omh.capabilities"], "src/capabilities")
+        self.assertEqual(package_dir["omh.routing"], "src/routing")
+        for package_path in (
+            "capabilities",
+            "coding",
+            "install",
+            "maintenance",
+            "mcp",
+            "quality",
+            "surfaces",
+            "system",
+            "workflows",
+        ):
+            with self.subTest(package_path=package_path):
+                self.assertTrue((source_root / package_path / "__init__.py").is_file())
+        self.assertTrue((source_root / "omh" / "cli" / "__init__.py").is_file())
+        for compatibility_module in (
+            "coding_delegation.py",
+            "materials.py",
+            "version.py",
+        ):
+            with self.subTest(compatibility_module=compatibility_module):
+                self.assertTrue((source_root / "omh" / compatibility_module).is_file())
+
+    def test_runtime_topology_is_deferred_from_first_pr(self) -> None:
+        self.assertFalse(Path("src/capabilities/runtime_topology.py").exists())
+        payload = capability_snapshot()
+        exported = json.dumps(payload, sort_keys=True)
+
+        self.assertNotIn('"runtime_topology"', exported)
+        self.assertIn("no runtime_topology schema in this PR", payload["non_goals"])
+
+
+class SpecialistDomainAwarenessTests(unittest.TestCase):
+    def test_specialist_domain_skills_have_the_specified_lanes_and_context_cards(self) -> None:
+        from omh.plugin_bundle.omh.awareness import awareness_primer_payload, workflow_context_card_for_workflow
+
+        lanes = {lane["id"]: set(lane["skills"]) for lane in awareness_primer_payload()["lanes"]}
+        expected_lanes = {
+            "intent_to_plan": {"product-brief"},
+            "research_and_ops": {
+                "finance-analysis",
+                "people-ops",
+                "legal-compliance-review",
+                "support-operations",
+                "curriculum-design",
+                "sales-development",
+            },
+            "materials_and_visuals": {"localization-review"},
+        }
+
+        for lane, skills in expected_lanes.items():
+            with self.subTest(lane=lane):
+                self.assertTrue(skills.issubset(lanes[lane]))
+            for skill in skills:
+                with self.subTest(skill=skill):
+                    self.assertEqual(workflow_context_card_for_workflow(skill)["id"], lane)

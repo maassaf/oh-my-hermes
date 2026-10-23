@@ -1,0 +1,559 @@
+{
+  "corpus": {
+    "claim_boundary": "Offline metadata evaluation does not prove live executor quality or observed execution.",
+    "command_bindings": [
+      {
+        "argv": [
+          "python3",
+          "-m",
+          "omh.cli",
+          "harness",
+          "validate"
+        ],
+        "command_id": "benchmark-probe",
+        "cwd_class": "repository_root",
+        "expected_exit": 0,
+        "expected_semantic_result": "validated",
+        "harness": "reference-harness",
+        "source_commit": "40062e0678b148e26a67aee4b3e60e936960dea9",
+        "source_id": "omh-contract-research"
+      }
+    ],
+    "corpus_digest": "4d4bc2bd00029ba54897a270d8b60e09ae060336a820b5bd56541da386a64656",
+    "corpus_id": "omh-independent-cross-harness-v1",
+    "dimensions": [
+      {
+        "id": "model_selection",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "routing",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "ralplan",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "ultragoal",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "ultrawork",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "installed_skill",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "safety",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "evidence",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "reproducibility",
+        "minimum": 6,
+        "weight": 10
+      },
+      {
+        "id": "reporting",
+        "minimum": 6,
+        "weight": 10
+      }
+    ],
+    "fixtures": [
+      {
+        "adapter_id": "model-selection/v1",
+        "capability_id": "explicit-owner",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "model_selection",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "selected_owner",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "codex"
+          }
+        ],
+        "id": "model-explicit-selection",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "explicit_owner",
+          "intent": "model_selection"
+        },
+        "required_evidence_class": "static",
+        "setup": {
+          "mode": "prepared",
+          "profile": "codex"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "model-selection/v1",
+        "capability_id": "neutral-fallback",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "model_selection",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "selection_state",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "unknown"
+          }
+        ],
+        "id": "model-neutral-fallback",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "neutral_default",
+          "intent": "model_selection"
+        },
+        "required_evidence_class": "static",
+        "setup": {
+          "mode": "prepared",
+          "profile": "generic"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "routing/v1",
+        "capability_id": "machine-route",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "routing",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "route_id",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "safe-feature-change"
+          }
+        ],
+        "id": "routing-machine-decision",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "machine_token",
+          "intent": "route"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "offline",
+          "profile": "router"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "routing/v1",
+        "capability_id": "coverage-boundary",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "routing",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "coverage_state",
+            "operator": "eq",
+            "scope": "facts",
+            "value": "unavailable"
+          }
+        ],
+        "id": "routing-unsupported-script",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "unsupported_script",
+          "intent": "route"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "offline",
+          "profile": "router"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "ralplan/v1",
+        "capability_id": "consensus-artifact",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "ralplan",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "artifact_schema",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "plan/v1"
+          }
+        ],
+        "id": "ralplan-consensus-artifact",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "consensus",
+          "intent": "plan"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "prepared",
+          "profile": "ralplan"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "ultragoal/v1",
+        "capability_id": "durable-goal",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "ultragoal",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "stop_rule",
+            "operator": "eq",
+            "scope": "facts",
+            "value": "explicit"
+          }
+        ],
+        "id": "ultragoal-stop-contract",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "stop_rule",
+          "intent": "goal"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "prepared",
+          "profile": "ultragoal"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "ultrawork/v1",
+        "capability_id": "observed-dispatch",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "ultrawork",
+        "dynamic": true,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "dispatch_state",
+            "operator": "eq",
+            "scope": "facts",
+            "value": "completed"
+          }
+        ],
+        "id": "ultrawork-observed-runtime",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "observed_parallelism",
+          "intent": "execute"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "runtime",
+          "profile": "ultrawork"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "ultrawork/v1",
+        "capability_id": "child-propagation",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "ultrawork",
+        "dynamic": true,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "parent_exit",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": 0
+          }
+        ],
+        "id": "ultrawork-child-propagation",
+        "priority": "P0",
+        "prompt": {
+          "constraint": "child_aggregate",
+          "intent": "execute"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "runtime",
+          "profile": "ultrawork"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "installed-skill/v1",
+        "capability_id": "catalog-parity",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "installed_skill",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "parity",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": true
+          }
+        ],
+        "id": "installed-skill-parity",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "catalog_parity",
+          "intent": "skill"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "offline",
+          "profile": "installed"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "safety/v1",
+        "capability_id": "claim-boundary",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "safety",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "claim_state",
+            "operator": "eq",
+            "scope": "facts",
+            "value": "prepared_not_observed"
+          }
+        ],
+        "id": "safety-prepared-boundary",
+        "priority": "P0",
+        "prompt": {
+          "constraint": "prepared_boundary",
+          "intent": "handoff"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "prepared",
+          "profile": "safety"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "safety/v1",
+        "capability_id": "metadata-redaction",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "safety",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "redaction_state",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "metadata_only"
+          }
+        ],
+        "id": "safety-no-secret-material",
+        "priority": "P0",
+        "prompt": {
+          "constraint": "metadata_only",
+          "intent": "report"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "offline",
+          "profile": "safety"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "evidence/v1",
+        "capability_id": "runtime-observation",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "evidence",
+        "dynamic": true,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "observation_state",
+            "operator": "eq",
+            "scope": "facts",
+            "value": "observed"
+          }
+        ],
+        "id": "evidence-runtime-observation",
+        "priority": "P0",
+        "prompt": {
+          "constraint": "runtime_observed",
+          "intent": "claim"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "runtime",
+          "profile": "evidence"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "evidence/v1",
+        "capability_id": "command-binding",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "evidence",
+        "dynamic": true,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "semantic_result",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "validated"
+          }
+        ],
+        "id": "evidence-command-binding",
+        "priority": "P0",
+        "prompt": {
+          "constraint": "immutable_command",
+          "intent": "claim"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "runtime",
+          "profile": "evidence"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "reproducibility/v1",
+        "capability_id": "source-pin",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "reproducibility",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "source_state",
+            "operator": "eq",
+            "scope": "facts",
+            "value": "pinned"
+          }
+        ],
+        "id": "reproducibility-source-pin",
+        "priority": "P0",
+        "prompt": {
+          "constraint": "immutable_source",
+          "intent": "reproduce"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "offline",
+          "profile": "reproducibility"
+        },
+        "source_id": "omh-contract-research"
+      },
+      {
+        "adapter_id": "reporting/v1",
+        "capability_id": "coverage-separation",
+        "command_binding_id": "benchmark-probe",
+        "dimension": "reporting",
+        "dynamic": false,
+        "evaluator": "predicate_subset/v1",
+        "expected_machine": [
+          {
+            "key": "unsupported_treatment",
+            "operator": "eq",
+            "scope": "actual_machine",
+            "value": "coverage_only"
+          }
+        ],
+        "id": "reporting-coverage-separation",
+        "priority": "P1",
+        "prompt": {
+          "constraint": "coverage_separate",
+          "intent": "report"
+        },
+        "required_evidence_class": "test",
+        "setup": {
+          "mode": "offline",
+          "profile": "reporting"
+        },
+        "source_id": "omh-contract-research"
+      }
+    ],
+    "schema_version": "cross_harness_benchmark/v1",
+    "sources": [
+      {
+        "commit": "40062e0678b148e26a67aee4b3e60e936960dea9",
+        "license": "MIT",
+        "path_metadata": "src/quality/harness_quality.py",
+        "source_id": "omh-contract-research"
+      }
+    ]
+  },
+  "schema_version": "cross_harness_benchmark_cli_input/v1",
+  "submission": {
+    "corpus_digest": "4d4bc2bd00029ba54897a270d8b60e09ae060336a820b5bd56541da386a64656",
+    "harness_id": "reference-harness",
+    "results": [
+      {
+        "actual_machine": {
+          "selected_owner": "codex"
+        },
+        "adapter_id": "model-selection/v1",
+        "capability_id": "explicit-owner",
+        "child_results": [
+          {
+            "id": "primary",
+            "result": "pass"
+          }
+        ],
+        "command_evidence": {
+          "argv": [
+            "python3",
+            "-m",
+            "omh.cli",
+            "harness",
+            "validate"
+          ],
+          "binding_digest": "f9d27d02811be03bca92a4b122520742172d72a8d145bed05ccf7bbda9f10032",
+          "command_id": "benchmark-probe",
+          "cwd_class": "repository_root",
+          "expected_exit": 0,
+          "expected_semantic_result": "validated",
+          "harness": "reference-harness",
+          "observed_exit": 0,
+          "observed_semantic_result": "validated",
+          "source_commit": "40062e0678b148e26a67aee4b3e60e936960dea9",
+          "source_id": "omh-contract-research"
+        },
+        "evidence_class": "prepared",
+        "facts": {},
+        "fixture_id": "model-explicit-selection",
+        "runtime_observation": "observed",
+        "source_binding": {
+          "commit": "40062e0678b148e26a67aee4b3e60e936960dea9",
+          "license": "MIT",
+          "path_metadata": "src/quality/harness_quality.py",
+          "source_digest": "26724aeed30663abcbca4a36416dfb2ef992154f9653ebf6dfbbc935e24e58b5",
+          "source_id": "omh-contract-research"
+        }
+      }
+    ],
+    "schema_version": "cross_harness_benchmark_submission/v1"
+  }
+}

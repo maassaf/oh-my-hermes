@@ -1,0 +1,69 @@
+name: Feature request
+description: Suggest a project improvement.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: user_goal
+    attributes:
+      label: Complete user goal
+      description: Describe the full target capability rather than an initial slice.
+    validations:
+      required: true
+  - type: dropdown
+    id: affected_surfaces
+    attributes:
+      label: Intended surfaces
+      description: Select every product or coding-owner surface this capability should cover.
+      multiple: true
+      options:
+        - Hermes chat or wrapper
+        - Codex
+        - Claude Code
+        - Hermes runtime or handoff
+        - Generic executor
+        - All executors (executor-neutral)
+    validations:
+      required: true
+  - type: textarea
+    id: observed_evidence
+    attributes:
+      label: Observed evidence
+      description: |
+        Describe the observed gap, if any. Label prepared handoffs or plans as
+        prepared_not_observed rather than execution, review, CI, or merge evidence.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: validation
+    attributes:
+      label: Success criteria
+      description: What observable behavior would prove the complete capability works?
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Boundaries and risks
+      description: Note executor differences, persisted state, generated artifacts, network effects, privacy concerns, or rollout constraints.
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, raw prompts, raw platform events, transcripts, or unrelated private data.
+

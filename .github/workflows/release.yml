@@ -1,0 +1,407 @@
+name: Distribution Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to resume
+        required: true
+        type: string
+
+concurrency:
+  group: distribution-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+      id-token: write
+    runs-on: macos-latest
+    environment: npm
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.14.0"
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Install trusted-publishing npm CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.5.1
+          test "$(npm --version)" = "11.5.1"
+
+      - name: Validate tag and distribution contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          test "$tag_commit" = "$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            test "$tag_commit" = "$(git rev-parse origin/main)"
+          else
+            recovery_changes="$(git diff --name-only "$tag_commit"..origin/main)"
+            while IFS= read -r path; do
+              test -z "$path" && continue
+              case "$path" in
+                .github/workflows/release.yml | \
+                docs/DISTRIBUTION.md | \
+                tests/test_homebrew_distribution.py | \
+                tools/package_manager/metadata.py)
+                  ;;
+                *)
+                  echo "release recovery includes artifact-affecting change: $path" >&2
+                  exit 1
+                  ;;
+              esac
+            done <<< "$recovery_changes"
+          fi
+          source_date_epoch="$(git show -s --format=%ct "$tag_commit")"
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
+          version="$(uv run tools/package_manager/metadata.py --version)"
+          test "$RELEASE_TAG" = "v$version"
+          PYTHONPATH=tests uv run python -m unittest \
+            tests.test_distribution_packages \
+            tests.test_homebrew_distribution \
+            tests.test_distribution_surfaces
+
+      - name: Generate revision-bound release evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Publication is gated on evidence generated from this exact tagged
+          # checkout: an uploaded bundle could describe any revision, which is
+          # the defect this step exists to close. A failing assertion here
+          # blocks the run before any artifact is built or published.
+          version="$(uv run tools/package_manager/metadata.py --version)"
+          test "v$version" = "$RELEASE_TAG"
+          evidence_home="$RUNNER_TEMP/omh-evidence-home"
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          uv run python -m omh.cli release notes --version "$version" \
+            --repo-root "$GITHUB_WORKSPACE" --notes-file "$notes_file" --json
+          echo "OMH_NOTES_FILE=$notes_file" >> "$GITHUB_ENV"
+          uv run python -m omh.cli \
+            --omh-home "$evidence_home" \
+            --hermes-home "$RUNNER_TEMP/omh-evidence-hermes" \
+            release evidence-bundle --version "$version" --write \
+            --repo-root "$GITHUB_WORKSPACE" --notes-file "$notes_file" --json > "$RUNNER_TEMP/evidence.json"
+          tag_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+          test "$tag_commit" = "$(git rev-parse HEAD)"
+          bundle="$evidence_home/runtime/release-evidence/$version.json"
+          uv run python - "$bundle" "$tag_commit" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          identity = payload["source_identity"]
+          assert payload["status"] == "ready", payload["blocking_failures"]
+          assert payload["publication_ready"] is True
+          assert payload["schema_version"] == "omh_release_evidence_bundle/v2"
+          assert identity["origin"] == "git_checkout"
+          assert identity["dirty"] is False
+          assert identity["identity_status"] == "available"
+          assert identity["commit_sha"] == sys.argv[2]
+          PY
+          echo "OMH_EVIDENCE_HOME=$evidence_home" >> "$GITHUB_ENV"
+
+      - name: Resolve release channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The tag stays vX.Y.Z (the immutability contract below depends on
+          # it); beta-ness rides in the repo at the tag instead. `beta` makes
+          # the GitHub release a prerelease -- /releases/latest skips
+          # prereleases, so stable installers keep resolving the previous
+          # version -- publishes npm under the `beta` dist-tag so `latest`
+          # does not move, and skips the Homebrew tap entirely.
+          channel="stable"
+          if [ -f .release-channel ]; then
+            channel="$(tr -d '[:space:]' < .release-channel)"
+          fi
+          case "$channel" in stable|beta) ;; *) echo "unknown .release-channel: $channel"; exit 1;; esac
+          echo "RELEASE_CHANNEL=$channel" >> "$GITHUB_ENV"
+          echo "release channel: $channel"
+
+      - name: Build one immutable wheel and npm tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD/dist/release"
+          wheel_dir="$root/python"
+          package_dir="$root/npm"
+          tarball_dir="$root/npm-tarball"
+          version="$(uv run tools/package_manager/metadata.py --version)"
+          uv build --wheel --out-dir "$wheel_dir"
+          wheel="$(find "$wheel_dir" -name '*.whl' -print -quit)"
+          uv run tools/package_manager/metadata.py --wheel "$wheel" --json
+          uv run tools/package_manager/stage_npm.py \
+            --wheel "$wheel" \
+            --output "$package_dir"
+          npm publish --dry-run "$package_dir"
+          mkdir -p "$tarball_dir"
+          npm pack --pack-destination "$tarball_dir" "$package_dir" >/dev/null
+          tarball="$tarball_dir/oh-my-hermes-$version.tgz"
+          sha256="$(shasum -a 256 "$wheel" | cut -d ' ' -f 1)"
+          {
+            echo "OMH_VERSION=$version"
+            echo "OMH_WHEEL=$wheel"
+            echo "OMH_WHEEL_SHA256=$sha256"
+            echo "OMH_TARBALL=$tarball"
+          } >> "$GITHUB_ENV"
+
+      - name: Bind and retain evidence with release outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Rebind the same revision-bound evidence to the built wheel so the
+          # retained bundle names the exact artifact it covers.
+          test -n "${OMH_EVIDENCE_HOME:-}"
+          uv run python -m omh.cli \
+            --omh-home "$OMH_EVIDENCE_HOME" \
+            --hermes-home "$RUNNER_TEMP/omh-evidence-hermes" \
+            release evidence-bundle --version "$OMH_VERSION" --write \
+            --repo-root "$GITHUB_WORKSPACE" --artifact "$OMH_WHEEL" \
+            --notes-file "$OMH_NOTES_FILE" --json > "$RUNNER_TEMP/evidence-bound.json"
+          bundle="$OMH_EVIDENCE_HOME/runtime/release-evidence/$OMH_VERSION.json"
+          uv run python - "$bundle" "$OMH_WHEEL_SHA256" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          identity = payload["source_identity"]
+          assert payload["status"] == "ready", payload["blocking_failures"]
+          assert payload["publication_ready"] is True
+          assert identity["identity_status"] == "available"
+          assert identity["dirty"] is False
+          artifact = identity["input_manifest"]["artifact"]
+          assert artifact["binding"] == "recorded"
+          assert artifact["sha256"] == "sha256:" + sys.argv[2]
+          PY
+          evidence_asset="$RUNNER_TEMP/omh-release-evidence-$OMH_VERSION.json"
+          cp "$bundle" "$evidence_asset"
+          echo "OMH_EVIDENCE_ASSET=$evidence_asset" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: rlaope/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+          path: dist/release/homebrew-tap
+
+      - name: Preflight npm and Homebrew destinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          package_name="$(npm view oh-my-hermes name --json | tr -d '"')"
+          test "$package_name" = "oh-my-hermes"
+          owner_verifier="tools/package_manager/metadata.py"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            owner_verifier="$RUNNER_TEMP/npm-owner-metadata.py"
+            git show origin/main:tools/package_manager/metadata.py \
+              > "$owner_verifier"
+          fi
+          npm owner ls oh-my-hermes --json |
+            uv run "$owner_verifier" --require-npm-owner rlaope
+          tap="$PWD/dist/release/homebrew-tap"
+          test -d "$tap/.git"
+          git -C "$tap" push --dry-run origin HEAD:refs/heads/main
+
+      - name: Create or verify immutable GitHub release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="$(basename "$OMH_WHEEL")"
+          evidence_asset="$(basename "$OMH_EVIDENCE_ASSET")"
+          body_json="$RUNNER_TEMP/release-body.json"
+          if gh release view "$RELEASE_TAG" --json body > "$body_json"; then
+            uv run python -m omh.cli release notes-verify \
+              --notes-file "$OMH_NOTES_FILE" --body-json "$body_json" --json
+            asset_count="$(
+              gh release view "$RELEASE_TAG" \
+                --json assets \
+                --jq "[.assets[] | select(.name == \"$asset\")] | length"
+            )"
+            if [ "$asset_count" = 0 ]; then
+              gh release upload "$RELEASE_TAG" \
+                "$OMH_WHEEL#Python wheel"
+            else
+              test "$asset_count" = 1
+            fi
+            evidence_count="$(
+              gh release view "$RELEASE_TAG" \
+                --json assets \
+                --jq "[.assets[] | select(.name == \"$evidence_asset\")] | length"
+            )"
+            if [ "$evidence_count" = 0 ]; then
+              gh release upload "$RELEASE_TAG" \
+                "$OMH_EVIDENCE_ASSET#Release evidence bundle"
+            else
+              test "$evidence_count" = 1
+            fi
+          else
+            # A failed lookup is not absence. Require repository access and a
+            # structured 404 from the release endpoint before selecting create.
+            gh api "repos/$GITHUB_REPOSITORY" --silent
+            lookup="$RUNNER_TEMP/release-lookup.json"
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$lookup"; then
+              echo "release lookup changed; rerun without publication" >&2
+              exit 1
+            fi
+            uv run python - "$lookup" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              lookup = json.load(handle)
+          assert str(lookup.get("status")) == "404", "release lookup did not prove absence"
+          PY
+            extra=()
+            if [ "$RELEASE_CHANNEL" = "beta" ]; then
+              extra+=(--prerelease)
+            fi
+            # macos-latest ships bash 3.2, where `set -u` treats an empty
+            # array's "${a[@]}" as unbound. Only the stable path leaves this
+            # array empty, so v1.0.7 (beta) never reached it and v1.0.8 --
+            # the first stable cut -- failed before creating the release.
+            gh release create "$RELEASE_TAG" \
+              "$OMH_WHEEL#Python wheel" \
+              "$OMH_EVIDENCE_ASSET#Release evidence bundle" \
+              --verify-tag \
+              --notes-file "$OMH_NOTES_FILE" \
+              --title "$RELEASE_TAG" \
+              ${extra[@]+"${extra[@]}"}
+          fi
+          gh release view "$RELEASE_TAG" --json body > "$body_json"
+          uv run python -m omh.cli release notes-verify \
+            --notes-file "$OMH_NOTES_FILE" --body-json "$body_json" --json
+
+      - name: Verify immutable release wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          verified="$RUNNER_TEMP/verified-release"
+          mkdir -p "$verified"
+          gh release download "$RELEASE_TAG" \
+            --pattern "$(basename "$OMH_WHEEL")" \
+            --dir "$verified"
+          release_wheel="$verified/$(basename "$OMH_WHEEL")"
+          cmp "$OMH_WHEEL" "$release_wheel"
+          release_sha256="$(shasum -a 256 "$release_wheel" | cut -d ' ' -f 1)"
+          test "$release_sha256" = "$OMH_WHEEL_SHA256"
+          echo "OMH_RELEASE_SHA256=$release_sha256" >> "$GITHUB_ENV"
+          gh release download "$RELEASE_TAG" \
+            --pattern "$(basename "$OMH_EVIDENCE_ASSET")" \
+            --dir "$verified"
+          release_bundle="$verified/$(basename "$OMH_EVIDENCE_ASSET")"
+          # The bundle re-stamps created_at on every regeneration at the same
+          # tag; every binding field (schema, revision, tree, input digests,
+          # artifact digest, status) must be identical once that stamp is
+          # excluded, so a resumed run cannot accept a bundle bound to
+          # different content behind a matching version/tag.
+          uv run python - "$OMH_EVIDENCE_ASSET" "$release_bundle" <<'PY'
+          import json
+          import sys
+
+          def normalized(path):
+              payload = json.load(open(path, encoding="utf-8"))
+              payload.pop("created_at", None)
+              return payload
+
+          assert normalized(sys.argv[1]) == normalized(sys.argv[2]), (
+              "release evidence bundle asset differs from the locally bound bundle"
+          )
+          PY
+
+      - name: Publish or verify npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_integrity="sha512-$(openssl dgst -sha512 -binary "$OMH_TARBALL" | openssl base64 -A)"
+          if published_integrity="$(
+            npm view "oh-my-hermes@$OMH_VERSION" dist.integrity --json 2>/dev/null
+          )"; then
+            published_integrity="${published_integrity//\"/}"
+            test "$published_integrity" = "$local_integrity"
+          else
+            tag_args=()
+            if [ "$RELEASE_CHANNEL" = "beta" ]; then
+              tag_args+=(--tag beta)
+            fi
+            # Same bash 3.2 empty-array guard as the release-create step.
+            npm publish "$OMH_TARBALL" --access public --provenance ${tag_args[@]+"${tag_args[@]}"}
+          fi
+
+      - name: Render verified Homebrew formula
+        if: env.RELEASE_CHANNEL == 'stable'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_url="https://github.com/rlaope/oh-my-hermes/releases/download/$RELEASE_TAG/$(basename "$OMH_WHEEL")"
+          uv run tools/package_manager/render_homebrew.py \
+            --version "$OMH_VERSION" \
+            --url "$release_url" \
+            --sha256 "$OMH_RELEASE_SHA256" \
+            --output "$RUNNER_TEMP/omh.rb"
+          ruby -c "$RUNNER_TEMP/omh.rb"
+
+      - name: Publish or verify Homebrew tap formula
+        if: env.RELEASE_CHANNEL == 'stable'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tap="$PWD/dist/release/homebrew-tap"
+          mkdir -p "$tap/Formula"
+          formula="$tap/Formula/omh.rb"
+          brew style "$RUNNER_TEMP/omh.rb"
+          if [ -f "$formula" ]; then
+            existing_version="$(
+              ruby -ne 'puts Regexp.last_match(1) if $_ =~ /^\s*version "([0-9]+\.[0-9]+\.[0-9]+)"$/' "$formula"
+            )"
+            test -n "$existing_version"
+            version_order="$(
+              uv run tools/package_manager/metadata.py --compare-versions "$existing_version" "$OMH_VERSION"
+            )"
+            test "$version_order" -le 0
+            if [ "$version_order" -eq 0 ]; then
+              cmp "$RUNNER_TEMP/omh.rb" "$tap/Formula/omh.rb"
+              exit 0
+            fi
+          fi
+          cp "$RUNNER_TEMP/omh.rb" "$formula"
+          brew style "$formula"
+          if [ -z "$(git -C "$tap" status --porcelain -- Formula/omh.rb)" ]; then
+            exit 0
+          fi
+          git -C "$tap" config user.name "github-actions[bot]"
+          git -C "$tap" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$tap" add Formula/omh.rb
+          git -C "$tap" commit -s -m "chore: update omh formula to $OMH_VERSION"
+          git -C "$tap" push

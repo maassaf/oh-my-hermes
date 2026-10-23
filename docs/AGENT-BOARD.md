@@ -1,0 +1,323 @@
+# Agent board and native Kanban coordination
+
+Normal users ask Hermes in chat to coordinate durable work across profiles or
+agents; the `agent-board` workflow skill routes that request. This page is the
+agent/operator reference for what OMH does underneath (issue #1417). Nothing
+here runs on its own, and nothing here grants a native permission.
+
+## Two coordination routes
+
+OMH decides between two Hermes-native surfaces from the request itself:
+
+| Coordination | Route | Native surface | When |
+| --- | --- | --- | --- |
+| `durable` | `kanban` | `kanban_*` tools on a named board | Work must survive a restart, cross profiles, or be picked up by another worker. |
+| `bounded_research` | `delegation` | `delegate_task` with a finite task list | A parent needs a bounded child research result and nothing durable. |
+
+The choice is deterministic. Neither route substitutes for the other when its
+surface is missing: an unavailable board is reported as unavailable, not
+downgraded to delegation, and a delegated child summary is never projected as
+a Kanban fact.
+
+## The `omh_agent_board` plugin tool
+
+The installed OMH plugin registers one tool, `omh_agent_board`, with two closed
+actions.
+
+- `prepare` validates a closed JSON request (`request_id`, `coordination`,
+  `operation`, `board`, `profile`, `arguments`, optional `task_id` and
+  `expected_observation_ref`) and returns an `agent_board_request/v1` record.
+  When the host exposes the needed capability the record carries one
+  `native_action`: the exact `kanban_<operation>` or `delegate_task` tool name
+  and its arguments. Hermes invokes that action through its normal tool loop.
+  OMH never calls a native tool from the handler.
+- `status` returns the bounded projection for one `request_id`, including any
+  observed receipt. It carries no action text, body, summary, or native output.
+
+Supported durable operations are `create`, `link`, `comment`, `heartbeat`,
+`request_review`, `request_changes`, `block`, `unblock`, `complete`, `show`,
+`list`, and `attachments`. Arguments are closed per operation: unknown keys,
+a foreign `board`, a `task_id` that differs from the request, a self-link, a
+completion without summary or result, an unknown block kind, and an
+`idempotency_key` that differs from the `request_id` are all rejected as
+invalid input. `create` always freezes `idempotency_key` to the `request_id`;
+its admitted lane fields and their bounds are listed under
+[Lane fields on create](#lane-fields-on-create).
+
+## Operator preconditions
+
+Nothing on this page works until the host is set up for it, and OMH checks
+none of these itself: it reports the capability gap it can see (`unavailable`
+with the missing tool or schema) and otherwise prepares the action as asked.
+
+- The `kanban` toolset must be enabled for the platform the session runs on
+  (`platform_toolsets.<platform>` or a profile-level `toolsets: [kanban]`),
+  and a fresh chat started afterwards; a session opened before the change
+  keeps its old tool list, so `kanban_create` stays `unavailable` there.
+- The board database must exist: `hermes kanban init` creates
+  `~/.hermes/kanban.db` (or the named board under `kanban/boards/<slug>/`).
+- A gateway must be running with `kanban.dispatch_in_gateway` enabled; that
+  dispatcher is the only thing that turns a `ready` row into a worker.
+- `assignee` must name an existing Hermes profile, because the dispatcher
+  spawns that profile as the worker.
+- Every name in `skills` must be installed in the assignee's profile; the
+  host resolves them at dispatch, not at create.
+
+The board engine itself -- admission, receipts and board references -- lives in
+the `omh` package, not in the plugin bundle, so the feature needs that package
+to be importable by the interpreter running Hermes. The documented installs
+put it in OMH's own environment, so on many hosts it is not. Such a host has
+no board feature and says so: `omh_agent_board` answers `unavailable` with
+reason `omh_agent_board_core_unavailable`, and the `pre_tool_call` /
+`post_tool_call` correlation stands down rather than refusing native `kanban_*`
+calls it has no prepared request for. What it must never do is fail: until
+#1623 the bundle module holding that bridge could not be imported at all
+without the package, and Hermes' memory-provider loader caches a module that
+raised, which turned an absent feature into a hook warning on every tool call.
+
+That expectation, what each affected feature does without the package, and
+when `omh` can be made importable from Hermes' own environment are written up
+once in
+[What the Hermes interpreter must be able to import](INSTALLATION.md#what-the-hermes-interpreter-must-be-able-to-import).
+`omh doctor` reads the installed bundle for the unguarded shape and reports it
+as `plugin_bundle_standalone_imports` (#1670).
+
+## Request states
+
+Every request is exactly one of these states. They never collapse into each
+other, and a later state never rewrites an earlier receipt.
+
+| State | Meaning |
+| --- | --- |
+| `prepared` | Closed input validated and a native action returned; not invoked. |
+| `unavailable` | A required capability is missing, or the board's bounded request store is full (`request_capacity`). `missing_capabilities` names the gap: the tool itself, `schema:<tool>`, `pre_tool_call`, `post_tool_call`, `host_identity`, `board_binding`, `native_compare_and_swap`, or `operation:<name>`. Zero native calls happen. |
+| `denied` | `request_digest_changed`, `foreign_host_scope`, `stale_observation`, or `reconciliation_required`. Nothing is invoked. |
+| `observed` | The paired post callback returned a well-formed, correctly bound native result; the receipt records only the landed facts. |
+| `failed` | The paired callback returned an error, a malformed result, a foreign task or edge, changed arguments, or a changed board binding. `requires_reconciliation` is set; a later observed `show` on the same task reconciles it. |
+
+A prepared or unavailable record is a card, not a task. A failed record is not
+a landed task either, even though the native call may have had effects.
+
+## Correlation in the normal Hermes loop
+
+OMH observes native calls only through the plugin's `pre_tool_call` and
+`post_tool_call` hooks, keyed by the host's own session, task, and tool-call
+identity.
+
+1. The `pre_tool_call` for `omh_agent_board` arms the handler with the host
+   identity and an argument digest; the handler consumes it exactly once. IDs
+   supplied inside the JSON are never trusted as identity.
+2. When Hermes later invokes a `kanban_*` tool whose board and frozen argument
+   digest match a prepared request from the same host scope, the pre hook
+   reserves that single request. If the schema, hooks, or board binding changed
+   in between, the hook returns a block directive and nothing is reserved.
+3. The matching `post_tool_call` observes the result. Required success keys,
+   `ok`, board and task binding, edge identity, list counts, landed status,
+   run IDs, and attachment metadata are checked; raw result bodies, comments,
+   events, worker context, and attachment names or URLs are not retained.
+
+Unrelated native Kanban use by the user or by Hermes is left alone: the hook
+only acts on calls that match a prepared OMH request.
+
+## Idempotent creation and restart
+
+Repeating a `create` with the same `request_id` returns the same request. A
+completed create is deduplicated by readback: a second caller in a new profile
+or after a restart receives the exact native task ID that was observed, not a
+second task. A changed request body under the same `request_id` is denied with
+`request_digest_changed`.
+
+OMH-origin processes sharing the same OMH home and effective board identity
+serialize creates through a short OS file lock around load, check, reserve, and
+save. The lock never spans a native call. An in-flight marker persists before
+native admission, so a process that dies mid-call leaves an ambiguous request
+that is never retried automatically; an observed `show` reconciles it.
+
+Board state lives under `<omh-home>/runtime/agent-board/<board-ref>.json` as a
+bounded `agent_board_state/v1` snapshot: request metadata, digests, receipts,
+and task references only. The store refuses symlinks, hard links, oversized
+files, and a native database override (`HERMES_KANBAN_DB`), because the board
+binding is derived from the host's path identity and must stay attributable.
+
+## Lane fields on create
+
+A durable `create` carries the per-task overlay that shapes the worker the
+dispatcher will spawn. The prepared action admits only these optional fields,
+each bounded in `src/workflows/agent_board.py` before any schema check:
+
+| Field | Type | Bound | Refusal |
+| --- | --- | --- | --- |
+| `body` | string | non-blank, at most 16,000 characters | `invalid_text`, `body_limit_exceeded` |
+| `parents` | array of task ids | at most 200 reference-shaped ids | `too_many_task_ids`, `invalid_reference` |
+| `skills` | array of skill names | at most 8 reference-shaped names | `too_many_skills`, `invalid_reference` |
+| `workspace_kind` | string | one of `scratch`, `dir`, `worktree` | `invalid_workspace_kind` |
+| `workspace_path` | string | only with `workspace_kind` `dir` or `worktree` | `workspace_path_requires_kind` |
+| `priority` | integer | 0 to 100 | `invalid_integer` |
+| `max_runtime_seconds` | integer | 60 to 86,400 | `invalid_integer` |
+| `initial_status`, `model`, `provider`, `completion_contract` | string | as before | `invalid_initial_status`, `invalid_text` |
+
+OMH's `initial_status` bound admits `todo`, `running`, `blocked`, and `triage`,
+but the native `kanban_create` enum is `running` or `blocked` only, so a
+`todo` or `triage` value is refused by the host schema gate as `unavailable`
+with `schema:kanban_create`, not by `invalid_initial_status`. Prefer omitting
+the field; the host then starts the task `ready`, or `todo` while a parent is
+unfinished.
+
+`parents` on create is how a dependency edge is declared: the new task stays
+`todo` until every parent is `done` or `archived`, then the host promotes it
+to `ready`. A later `link` is repair for an edge that was missed at create,
+not the normal way to build a graph.
+
+### The role is a contract
+
+A create may instead state one `lane_role`, and OMH fills the lane fields that
+role implies before anything else is validated:
+
+| `lane_role` | fills `skills` | fills `workspace_kind` | checks |
+| --- | --- | --- | --- |
+| `builder` | `ulw-work` | `worktree` | — |
+| `verifier` | `omh-verification-gate` | `worktree` | non-empty `parents` |
+| `reviewer` | `omh-code-review` | nothing (read-only lane) | non-empty `parents` |
+| `docs` | `omh-docs` | `worktree` | — |
+| `qa` | `ulw-qa` | `worktree` | — |
+
+An explicit `skills` or `workspace_kind` from the caller wins, except that a
+`skills` list must contain the role's own skill; extra skills ride along under
+the same ceiling of eight. The refusals are `invalid_lane_role` for a role
+outside the table, `lane_role_skills_mismatch` for a `skills` list without the
+role's own skill, and `verifier_requires_parents` or
+`reviewer_requires_parents` for a fan-in lane that declares no inputs.
+
+`lane_role` is an OMH-side argument only. Native `kanban_create` has no such
+property, so the prepared action never carries it: OMH records the role on the
+request and on the receipt, then strips it before the native action is built.
+A leaked role would fail the host schema gate and degrade the request to
+`unavailable` with `schema:kanban_create`. On any other operation, `lane_role`
+is simply an unknown argument (`unsupported_argument`). Requests stored before
+this field existed reload with an empty role.
+
+A board `done` is the worker's own completion claim. It is never
+verification, CI, review, or merge evidence; those stay `not_observed` until
+their own surface reports them.
+
+The host's exposed schema is still the gate: an older host whose
+`kanban_create` lacks one of these properties degrades the request to
+`unavailable` with `schema:kanban_create` in `missing_capabilities`, and a
+create that does not name the absent field is still prepared.
+
+ultrawork prepares its durable lanes through this board; see
+`skills/ulw-work/references/kanban-lane.md`.
+
+## Profiles are permission envelopes
+
+A Hermes profile is a full home: its own config, auth, toolsets, model
+default, and per-profile cap. The dispatcher spawns a profile, not a role, so
+`assignee` is the envelope the worker runs inside. A role is the per-task
+overlay the create already carries: the `skills` pin, the node prompt in
+`body`, and the `model` / `provider` pin. Team packs under `<home>/agents/*.md`
+are not read by the Hermes roster and do not create assignees.
+
+A second profile is justified only when a lane needs different authority,
+for example a reviewer envelope with no source writes. The operator recipe is
+`hermes profile create <name> --clone` (which copies `config.yaml`, `.env`,
+`SOUL.md`, and installed skills into the new home) followed by
+`HERMES_HOME=<profile> omh setup`; both steps are `prepared_not_observed` from
+OMH's side, and OMH never writes a `profile.yaml`.
+
+## Separate lifecycle evidence
+
+Each observed operation records only its own fact: `create`, `link`,
+`comment`, `heartbeat`, `block`, `unblock`, `review_requested`,
+`changes_requested`, `complete`, `show`, `list`, and `attachments`. A
+`running` status seen on readback means the host reports a claimed run; it is
+not dispatch proof. `complete` proves the completion call landed; it implies
+no review approval, CI result, or merge.
+
+## Native boundaries (observed on the reviewed host)
+
+These are host facts recorded as data, not OMH failures.
+
+- There is no native `kanban_dispatch` tool. Dispatch is `unavailable`; an
+  operator claim is the observed path to a running task.
+- Dispatch is asynchronous and gateway-owned. `dispatcher_presence:
+  not_observed` in the HUD means only that no worker or claim was observed
+  on any selected row while a `ready` row waited past the dispatch window;
+  a running dispatcher that skips the row (missing assignee profile,
+  per-assignee concurrency cap, tenant mismatch) has the same shape. Check
+  the operator preconditions above before concluding the dispatcher is
+  down. It is distinct from a failure.
+- The board records no usage of its own. The model, turns, tool calls, tokens
+  and cost on a HUD lane row come from the worker's own Hermes session in the
+  assignee profile's `state.db`, linked by the `worker_session_id` the worker
+  stamps on its run the first time it calls `kanban_complete` or
+  `kanban_request_review`; before that, by the session whose title Hermes
+  derived from the dispatcher's opening prompt, `work kanban task <id>`,
+  inside that run's dispatch window (what tells two workers one tick spawned
+  apart); and failing both, by the single kanban-source session opened
+  inside the window. A lane no rule links — and a window two untitled
+  sessions answer — shows no model and no tokens rather than a borrowed
+  figure.
+- Native tools expose no compare-and-swap. A request that supplies
+  `expected_revision` or `expected_run_id` is `unavailable` with
+  `native_compare_and_swap`. Use `expected_observation_ref` to bind a request
+  to OMH's last local observation instead.
+- A positive `request_changes` needs a review-claimed run from the host's own
+  review dispatcher. A headless host with review dispatch disabled exercises
+  only the denial path; that is recorded as a native boundary.
+- Worker-owned mutations run under the host's worker environment scope. The
+  hook never widens that scope.
+
+Fixture hosts used in tests supply schemas and results explicitly and are
+labeled as fixtures. They prove correlation, refusal, and persistence
+behavior; they are not native execution evidence.
+
+## Native, fixture, and unsupported boundaries
+
+| Surface | Provenance | What it proves | What it does not prove |
+| --- | --- | --- | --- |
+| Real Hermes host, normal tool loop | native | The prepared `kanban_*` action was invoked by Hermes, the paired hooks correlated it, and the receipt records the landed identities read back from the host. | Review approval, CI, merge, or that a `running` task was dispatched by anything other than an operator claim. |
+| Fixture host in tests (`tests/five_issue_cases/kanban.py`) | fixture | Correlation, digest freezing, refusal, persistence, restart, and idempotency behavior of the bridge and board, with zero native calls. | Native Hermes execution or authorization. Results are labeled `fixture` and never counted as native success. |
+| `kanban_dispatch`, native compare-and-swap, positive `request_changes` on a headless host | unsupported or native boundary | The request is reported `unavailable` with the named capability, or the boundary is recorded as data in the surface record. | Nothing; OMH never substitutes another route or invents the missing verdict. |
+
+## Wrapper surface
+
+Chat wrappers reach the board through three deterministic projections in
+`omh.wrapper.contract`. None of them invokes a native tool, and native action
+arguments never enter wrapper metadata.
+
+- The routed `agent-board` chat card (`build_chat_interaction_payload`, or
+  `omh chat interact` for operators) carries three actions:
+  `prepare_agent_board_card` binds `omh_agent_board` with `action: prepare`,
+  the six required request inputs, the two coordination options, and
+  `execution_policy: prepare_only`; `refresh_status` binds `action: status`
+  with `request_id` as its required input and `execution_policy: read_only`;
+  `show_status` points at the read-only fanout status reader described in
+  [`docs/FANOUT-EXECUTOR-EVIDENCE.md`](FANOUT-EXECUTOR-EVIDENCE.md).
+- `build_agent_board_status_interaction(request, source=...)` renders one
+  validated `agent_board_request/v1` prepare or status record as a status
+  card. The projection blanks `native_action`, lists `missing_capabilities`
+  and each observed receipt's operation, state, and task, and keeps
+  `execution_observed: false` with review, CI, and merge `not_observed`. Its
+  only action is `refresh_status`.
+- `build_fanout_status_interaction(paths, fanout_id=..., unit_id=None)` is
+  the reader behind `show_status`; it adds a copy-only resume action only for
+  an explicitly selected unit.
+
+[`examples/agent-board/native-actions.json`](../examples/agent-board/native-actions.json)
+is the committed projection of those APIs on fixed inputs: the chat card for
+one durable request, the prepared `kanban_create` action with its frozen
+`idempotency_key`, and the status interaction for that same record. The
+example is fixture-attributed (`provenance.kind: fixture`, zero native calls)
+and is regenerated, never hand-edited.
+
+## Generated projections
+
+The `agent-board` skill body is generated from
+`src/skills/catalog_feature_surfaces.py`, and the wrapper card `agent_board/v1`
+stays metadata-only. `tests/test_agent_board_kanban.py` compares the shipped
+skill, reference, workflow, and capability-family projections byte for byte
+against their renderers, and compares the native-actions example by parsed
+equality against the public APIs plus one real `omh chat interact` run.
+No separate `references/native-kanban.md` ships under the skill: the
+integrated boundaries live in the skill body's checklist and recovery notes,
+and this page is the operator reference.

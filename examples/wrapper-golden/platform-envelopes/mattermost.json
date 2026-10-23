@@ -1,0 +1,315 @@
+{
+  "schema_version": "omh_platform_envelope_golden/v1",
+  "platform_id": "mattermost",
+  "source": "generic",
+  "platform_context": {
+    "platform": "mattermost",
+    "conversation_ref": "conv:mattermost:7d3a91",
+    "thread_ref": "thread:mattermost:2f6c84",
+    "capabilities": {
+      "media": {
+        "files": true
+      },
+      "reply": {
+        "threads": true
+      },
+      "reactions": {
+        "native": true
+      },
+      "actions": {
+        "buttons": true
+      }
+    }
+  },
+  "body": "Review the prepared cross-channel handoff.\n\n- Confirm scope\n- Keep delivery adapter-owned.",
+  "actions": [
+    {
+      "id": "approve",
+      "label": "Approve prepared handoff"
+    },
+    {
+      "id": "revise",
+      "label": "Revise scope"
+    }
+  ],
+  "attachments": [
+    {
+      "kind": "document",
+      "ref": "attachment:adapter-guide",
+      "meta": {
+        "alt": "Adapter guide"
+      }
+    }
+  ],
+  "platform_envelope": {
+    "schema_version": "omh_platform_envelope/v1",
+    "platform_id": "mattermost",
+    "transport_source": "generic",
+    "render_profile": "rich_markdown",
+    "render_profile_provenance": "profile_default",
+    "format_family": "mattermost/commonmark",
+    "capabilities": {
+      "media": {
+        "images": false,
+        "files": true,
+        "voice": false,
+        "video": false,
+        "captions": false
+      },
+      "reply": {
+        "threads": true,
+        "quotes": false,
+        "edit": false,
+        "delete": false
+      },
+      "reactions": {
+        "native": true,
+        "custom_emoji": false
+      },
+      "actions": {
+        "buttons": true,
+        "forms": false,
+        "typing_indicator": false
+      }
+    },
+    "capability_provenance": {
+      "media": {
+        "images": "unverified_default_false",
+        "files": "adapter_declared",
+        "voice": "unverified_default_false",
+        "video": "unverified_default_false",
+        "captions": "unverified_default_false"
+      },
+      "reply": {
+        "threads": "adapter_declared",
+        "quotes": "unverified_default_false",
+        "edit": "unverified_default_false",
+        "delete": "unverified_default_false"
+      },
+      "reactions": {
+        "native": "adapter_declared",
+        "custom_emoji": "unverified_default_false"
+      },
+      "actions": {
+        "buttons": "adapter_declared",
+        "forms": "unverified_default_false",
+        "typing_indicator": "unverified_default_false"
+      }
+    },
+    "limits": {
+      "max_recommended_chars": 1600,
+      "hard_limit_chars": 1800
+    },
+    "limit_provenance": "conservative_default",
+    "identity": {
+      "conversation_ref": "conv:mattermost:7d3a91",
+      "thread_ref": "thread:mattermost:2f6c84"
+    },
+    "session_scope": "conversation",
+    "claim_boundary": "adapter_owns_transport_core_owns_response"
+  },
+  "messenger_rendering": {
+    "schema_version": "omh_messenger_rendering/v1",
+    "render_profile": "rich_markdown",
+    "visible_prefix": "[omh] adapter golden",
+    "first_line": "Prepared cross-channel handoff",
+    "body_format": "rich_markdown",
+    "body_text": "```\nSKILL   ulw-work\nMODEL   hermes (adapter-selected)\nSTATUS  prepared_not_observed\nPROMPT  sha256:6f1d8b5a2c4e\n```\n\nReview the prepared cross-channel handoff.\n\n- Confirm scope\n- Keep delivery adapter-owned.",
+    "body_blocks": [
+      {
+        "type": "code_block",
+        "text": "SKILL   ulw-work\nMODEL   hermes (adapter-selected)\nSTATUS  prepared_not_observed\nPROMPT  sha256:6f1d8b5a2c4e",
+        "language": ""
+      },
+      {
+        "type": "paragraph",
+        "text": "Review the prepared cross-channel handoff."
+      },
+      {
+        "type": "bullet",
+        "text": "Confirm scope"
+      },
+      {
+        "type": "bullet",
+        "text": "Keep delivery adapter-owned."
+      }
+    ],
+    "fallback_body_format": "messenger_safe_markdown",
+    "fallback_body_text": "Review the prepared cross-channel handoff.\n\n- Confirm scope\n- Keep delivery adapter-owned.\n\nskill: ulw-work — model: hermes (adapter-selected) — status: prepared_not_observed — prompt: sha256:6f1d8b5a2c4e",
+    "fallback_body_blocks": [
+      {
+        "type": "paragraph",
+        "text": "Review the prepared cross-channel handoff."
+      },
+      {
+        "type": "bullet",
+        "text": "Confirm scope"
+      },
+      {
+        "type": "bullet",
+        "text": "Keep delivery adapter-owned."
+      },
+      {
+        "type": "paragraph",
+        "text": "skill: ulw-work — model: hermes (adapter-selected) — status: prepared_not_observed — prompt: sha256:6f1d8b5a2c4e"
+      }
+    ],
+    "preferred_blocks": [
+      "short_paragraph",
+      "bulleted_list",
+      "numbered_list",
+      "markdown_table",
+      "code_block",
+      "status_lines"
+    ],
+    "avoid_blocks": [
+      "large_unbroken_block"
+    ],
+    "chunking": {
+      "max_recommended_chars": 1600,
+      "hard_limit_chars": 1800,
+      "limit_provenance": "conservative_default",
+      "split_on": [
+        "headings",
+        "bullets",
+        "paragraphs"
+      ]
+    },
+    "chunked_body_texts": [
+      "```\nSKILL   ulw-work\nMODEL   hermes (adapter-selected)\nSTATUS  prepared_not_observed\nPROMPT  sha256:6f1d8b5a2c4e\n```\n\nReview the prepared cross-channel handoff.\n\n- Confirm scope\n- Keep delivery adapter-owned."
+    ],
+    "follow_up_texts": [
+      "HERMES PROMPTING — hermes (adapter-selected)\n```\nPrepare the bounded adapter response; do not deliver it.\n```"
+    ],
+    "transforms_applied": [],
+    "fallback_transforms_applied": [],
+    "prefix_policy": {
+      "default": "once_per_response_first_line",
+      "repeat_when": "adapter_splits_response_across_separate_messages_or_chunks",
+      "do_not_repeat": "every_paragraph_or_every_line"
+    },
+    "density_policy": {
+      "max_heading_levels": 2,
+      "max_bullets": 12,
+      "avoid": [
+        "nested_bullets",
+        "bold_inside_bullets",
+        "tables_on_limited_profiles"
+      ]
+    },
+    "platform_hints": {
+      "discord": "Start the first message with the visible prefix, prefer bullets or numbered lists over tables, and repeat the prefix only if the adapter splits a long response into separate messages.",
+      "slack": "Start the response with the visible prefix, prefer blocks or bullets over wide Markdown tables, and keep claim boundaries visible.",
+      "telegram": "Start the response with the visible prefix, keep sections short, avoid table layouts, and post body_text as plain text WITHOUT parse_mode; if you opt into MarkdownV2 you must escape every reserved character yourself.",
+      "hermes": "Render body_text as rich Markdown when the Hermes surface supports it; use fallback_body_text when relaying to a narrow chat adapter.",
+      "generic": "Use body_text for the declared render_profile; use fallback_body_text if the actual surface cannot render Markdown tables."
+    },
+    "table_policy": "preserve_markdown_tables_when_supported",
+    "body_preview": "``` SKILL ulw-work MODEL hermes (adapter-selected) STATUS prepared_not_observed PROMPT sha256:6f1d8b5a2c4e ``` Review the prepared cross-channel handoff. - Confirm scope - Keep...",
+    "claim_boundary": "This golden records deterministic preparation only; it is not network, posting, delivery, or vendor-capability evidence.",
+    "omh_message_gate": {
+      "schema_version": "omh_message_gate/v1",
+      "model_route_resolved": true,
+      "fields": {
+        "skill": "ulw-work",
+        "status": "prepared_not_observed",
+        "prompt": "sha256:6f1d8b5a2c4e",
+        "model": "hermes (adapter-selected)"
+      },
+      "field_order": [
+        "skill",
+        "model",
+        "status",
+        "prompt"
+      ],
+      "render_guidance": "Render the provided gate lines verbatim, in order, and post prompt_block as its own follow-on message. Placement follows the profile: above the response body on a rich surface, below it on a limited one, where the first line is the notification preview. Never restate either as a markdown table: messenger surfaces drop tables.",
+      "prompt_block": "HERMES PROMPTING — hermes (adapter-selected)\n```\nPrepare the bounded adapter response; do not deliver it.\n```",
+      "warnings": []
+    },
+    "platform_id": "mattermost",
+    "format_family": "mattermost/commonmark",
+    "capabilities": {
+      "media": {
+        "images": false,
+        "files": true,
+        "voice": false,
+        "video": false,
+        "captions": false
+      },
+      "reply": {
+        "threads": true,
+        "quotes": false,
+        "edit": false,
+        "delete": false
+      },
+      "reactions": {
+        "native": true,
+        "custom_emoji": false
+      },
+      "actions": {
+        "buttons": true,
+        "forms": false,
+        "typing_indicator": false
+      }
+    },
+    "adapter_payload": {
+      "schema_version": "omh_messenger_adapter_payload/v1",
+      "platform_id": "mattermost",
+      "transport_source": "generic",
+      "media": {
+        "attachments": [
+          {
+            "kind": "document",
+            "ref": "attachment:adapter-guide",
+            "meta": {
+              "alt": "Adapter guide"
+            }
+          }
+        ],
+        "image_support": false,
+        "audio_support": false,
+        "video_support": false,
+        "document_support": true,
+        "caption_support": false
+      },
+      "reply": {
+        "reply_support": false,
+        "threads_support": true,
+        "thread_ref": "thread:mattermost:2f6c84"
+      },
+      "reactions": {
+        "items": [],
+        "native_support": true,
+        "custom_support": false
+      },
+      "actions": {
+        "response_actions": [
+          {
+            "id": "approve",
+            "label": "Approve prepared handoff"
+          },
+          {
+            "id": "revise",
+            "label": "Revise scope"
+          }
+        ],
+        "button_support": true,
+        "form_support": false
+      },
+      "delivery": {
+        "state": "prepared_not_delivered",
+        "observed": false,
+        "adapter_owned_responsibilities": [
+          "auth",
+          "network",
+          "encryption",
+          "media_transfer",
+          "posting",
+          "delivery"
+        ]
+      },
+      "claim_boundary": "Rendering and capabilities are not execution or delivery evidence."
+    }
+  },
+  "claim_boundary": "This golden records deterministic preparation only; it is not network, posting, delivery, or vendor-capability evidence."
+}

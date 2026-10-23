@@ -1,0 +1,10 @@
+{
+  "schema_version": "omh_memory_block/v1",
+  "label": "legacy-system",
+  "description": "Legacy system instructions.",
+  "value": "Keep memory review-gated.",
+  "limit": 2000,
+  "tier": "system",
+  "scope": {"kind": "project", "ref": "default"},
+  "revision": 1
+}

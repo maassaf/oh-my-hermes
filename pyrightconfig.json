@@ -1,0 +1,17 @@
+{
+  "pythonVersion": "3.11",
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "extraPaths": ["tools"]
+    },
+    {
+      "root": "tools",
+      "extraPaths": []
+    },
+    {
+      "root": ".",
+      "extraPaths": ["src"]
+    }
+  ]
+}

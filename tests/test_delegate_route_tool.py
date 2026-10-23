@@ -1,0 +1,1138 @@
+"""Contracts for prepared per-dispatch delegation routing.
+
+Hermes resolves `delegation.model` / `delegation.reasoning_effort` /
+`delegation.provider` from config.yaml at every `delegate_task` dispatch and
+invalidates its config cache on the file's mtime+size, so writing the route
+between dispatches gives each child its own model. These tests pin the write
+itself (surgical, atomic, refuses YAML injection and symlinks) and the tool
+projection over the shipped mixture chains.
+"""
+
+import json
+import os
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from omh.plugin_bundle.omh.delegation_routing import (
+    read_delegation_route,
+    read_session_provider,
+    write_delegation_route,
+)
+from omh.plugin_bundle.omh.hermes_delegation import (
+    append_delegation_route_provenance,
+    load_delegation_route_provenance,
+)
+from omh.plugin_bundle.omh.tools.delegate_route_tool import omh_delegate_route_handler
+from _module_patch import patch_modules
+
+
+class DelegationRouteHomeTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.default_home = self.root / ".hermes"
+        self.profile = self.default_home / "profiles" / "test-profile"
+        self.omh_home = self.root / ".omh"
+        self.enterContext(mock.patch.dict(os.environ, {
+            "HOME": str(self.root),
+            "USERPROFILE": str(self.root),
+            "HERMES_HOME": str(self.profile),
+            "OMH_HOME": str(self.omh_home),
+        }))
+        # Force the standalone boundary regardless of the developer's host.
+        self.enterContext(patch_modules({"hermes_constants": None}))
+
+    def _assert_tool_cycle(self, target, *, native=False, **args):
+        untouched = (
+            "# keep this comment\nmodel:\n  provider: test-parent\n"
+            "delegation:\n  max_concurrent_children: 4\n"
+            "display:\n  skin: test-skin\n"
+        )
+        other_homes = {self.default_home, self.profile, self.root / "native"} - {target}
+        for home in other_homes | {target}:
+            home.mkdir(parents=True, exist_ok=True)
+            (home / "config.yaml").write_text(untouched, encoding="utf-8")
+
+        config = target / "config.yaml"
+        target_text = untouched.replace("test-parent", "target-parent")
+        config.write_text(target_text, encoding="utf-8")
+
+        def call(action, **values):
+            return json.loads(omh_delegate_route_handler({
+                "action": action, **({} if native else {"omh_home": str(self.omh_home)}), **args, **values,
+            }))
+
+        self.assertEqual(call("status")["route"], {})
+        result = call("set", model="test-child", reasoning_effort="high")
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(config.read_text(encoding="utf-8"), target_text.replace(
+            "delegation:\n",
+            "delegation:\n  model: 'test-child'\n  reasoning_effort: 'high'\n",
+        ))
+        self.assertEqual(call("status")["route"]["model"], "test-child")
+        self.assertEqual(read_session_provider(args.get("hermes_home")), "target-parent")
+        self.assertEqual(call("clear")["status"], "cleared")
+        self.assertEqual(call("status")["route"], {})
+        self.assertEqual(config.read_text(encoding="utf-8"), target_text)
+        for home in other_homes:
+            self.assertEqual((home / "config.yaml").read_text(encoding="utf-8"), untouched)
+
+    def test_standalone_tool_uses_environment_profile(self):
+        self._assert_tool_cycle(self.profile)
+
+    def test_standalone_tool_expands_environment_home(self):
+        os.environ["HERMES_HOME"] = "~/.hermes/profiles/test-profile"
+        self._assert_tool_cycle(self.profile)
+
+    def test_standalone_tool_defaults_when_environment_is_unset(self):
+        os.environ.pop("HERMES_HOME")
+        self._assert_tool_cycle(self.default_home)
+
+    def test_standalone_tool_defaults_when_environment_is_empty(self):
+        os.environ["HERMES_HOME"] = ""
+        self._assert_tool_cycle(self.default_home)
+
+    def test_explicit_home_outranks_environment(self):
+        self._assert_tool_cycle(self.root / "explicit", hermes_home="~/explicit")
+
+    def test_native_home_outranks_environment(self):
+        native = self.root / "native"
+        module = types.ModuleType("hermes_constants")
+        module.get_hermes_home = lambda: native
+        module.get_hermes_home_override = lambda: str(native)
+        with patch_modules({
+            "hermes_constants": module,
+            "agent.runtime_cwd": types.SimpleNamespace(resolve_context_cwd=lambda: None, resolve_agent_cwd=Path.cwd),
+            "agent.secret_scope": types.SimpleNamespace(is_multiplex_active=lambda: False,
+                current_secret_scope=lambda: {"OMH_HOME": str(self.omh_home)},
+                get_secret=lambda name: str(self.omh_home),
+                build_profile_secret_scope=lambda home: {"OMH_HOME": str(self.omh_home)}),
+            "hermes_cli.managed_scope": types.SimpleNamespace(load_managed_config=lambda: {}),
+            "hermes_cli.config": types.SimpleNamespace(require_readable_config_before_write=lambda path: {},
+                load_config_readonly=lambda: {}),
+        }):
+            self._assert_tool_cycle(native, native=True)
+
+    def test_explicit_home_does_not_consult_native_resolver(self):
+        module = types.ModuleType("hermes_constants")
+        module.get_hermes_home = mock.Mock(side_effect=AssertionError("must not resolve"))
+        with patch_modules({"hermes_constants": module}):
+            # Explicit programmatic/CLI writes remain authoritative. A native
+            # model tool's home fields are no longer an offline-operation API.
+            write_delegation_route("~/explicit", model="test-child")
+            self.assertEqual(read_delegation_route("~/explicit"), {"model": "test-child"})
+        module.get_hermes_home.assert_not_called()
+
+
+class DelegationRouteWriterTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.config = self.home / "config.yaml"
+
+    def test_routing_into_a_missing_config_creates_only_the_delegation_section(self):
+        result = write_delegation_route(self.home, model="gpt-5.6-sol", reasoning_effort="xhigh")
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(
+            self.config.read_text(encoding="utf-8"),
+            "delegation:\n  model: 'gpt-5.6-sol'\n  reasoning_effort: 'xhigh'\n",
+        )
+
+    def test_routing_preserves_every_unmanaged_byte_of_an_existing_config(self):
+        self.config.write_text(
+            "model: kimi-k3\n"
+            "delegation:\n"
+            "  max_concurrent_children: 4\n"
+            "  model: old-model\n"
+            "display:\n"
+            "  skin: omh\n",
+            encoding="utf-8",
+        )
+        result = write_delegation_route(self.home, model="glm-5.2-ultrafast")
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(result["previous"], {"model": "old-model"})
+        self.assertEqual(
+            self.config.read_text(encoding="utf-8"),
+            "model: kimi-k3\n"
+            "delegation:\n"
+            "  model: 'glm-5.2-ultrafast'\n"
+            "  max_concurrent_children: 4\n"
+            "display:\n"
+            "  skin: omh\n",
+        )
+
+    def test_clear_removes_only_the_routable_keys(self):
+        self.config.write_text(
+            "delegation:\n"
+            "  model: gpt-5.6-sol\n"
+            "  reasoning_effort: xhigh\n"
+            "  provider: openai-codex\n"
+            "  max_concurrent_children: 4\n",
+            encoding="utf-8",
+        )
+        result = write_delegation_route(self.home, clear=True)
+        self.assertEqual(result["status"], "cleared")
+        self.assertEqual(
+            self.config.read_text(encoding="utf-8"),
+            "delegation:\n  max_concurrent_children: 4\n",
+        )
+        self.assertEqual(read_delegation_route(self.home), {})
+
+    def test_a_value_that_is_not_a_plain_token_is_refused(self):
+        # Anything beyond an identifier token could smuggle YAML structure
+        # into the config; the writer refuses instead of quoting.
+        result = write_delegation_route(self.home, model="evil: {a: b}")
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(self.config.exists())
+
+    def test_named_provider_scalars_are_read_written_and_bounded(self):
+        self.config.write_text(
+            "model:\n  provider: custom:cli-proxy\n"
+            "delegation:\n  provider: \"custom:cli-proxy\"\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(read_session_provider(self.home), "custom:cli-proxy")
+        self.assertEqual(read_delegation_route(self.home), {"provider": "custom:cli-proxy"})
+        self.config.write_text(
+            "model:\n  provider: 'custom:cli-proxy'\n"
+            "delegation:\n  provider: custom:cli-proxy\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(read_session_provider(self.home), "custom:cli-proxy")
+        self.assertEqual(read_delegation_route(self.home), {"provider": "custom:cli-proxy"})
+        result = write_delegation_route(self.home, model="vendor/model", provider="custom:cli-proxy")
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(result["previous"], {"provider": "custom:cli-proxy"})
+        self.assertEqual(read_delegation_route(self.home), {"model": "vendor/model", "provider": "custom:cli-proxy"})
+        self.assertIn("provider: 'custom:cli-proxy'", self.config.read_text(encoding="utf-8"))
+        for invalid in ("custom: cli-proxy", "custom:", "custom::cli-proxy", "custom:cli-proxy!", "a" * 129):
+            with self.subTest(invalid=invalid):
+                before = self.config.read_bytes()
+                self.assertEqual(write_delegation_route(self.home, provider=invalid)["status"], "error")
+                self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(write_delegation_route(self.home, provider="a" * 128)["status"], "routed")
+
+    def test_a_symlinked_config_is_refused_not_replaced(self):
+        real = self.home / "real-config.yaml"
+        real.write_text("model: kimi-k3\n", encoding="utf-8")
+        self.config.symlink_to(real)
+        result = write_delegation_route(self.home, model="gpt-5.6-sol")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(real.read_text(encoding="utf-8"), "model: kimi-k3\n")
+
+    def test_read_reports_the_last_occurrence_like_yaml_does(self):
+        self.config.write_text(
+            "delegation:\n  model: first\n  model: second\n", encoding="utf-8"
+        )
+        self.assertEqual(read_delegation_route(self.home), {"model": "second"})
+
+    def test_yaml_scalars_nested_keys_and_dotted_sections_stay_safe(self):
+        self.config.write_text(
+            "delegation:\n"
+            "  metadata:\n"
+            "    model: keep-model\n"
+            "  model: old-model\n"
+            "crof.ai:\n"
+            "  provider: keep-provider\n",
+            encoding="utf-8",
+        )
+
+        result = write_delegation_route(
+            self.home,
+            model="vendor/foreign-wire",
+            provider="null",
+            reasoning_effort="false",
+        )
+
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(
+            self.config.read_text(encoding="utf-8"),
+            "delegation:\n"
+            "  model: 'vendor/foreign-wire'\n"
+            "  reasoning_effort: 'false'\n"
+            "  provider: 'null'\n"
+            "  metadata:\n"
+            "    model: keep-model\n"
+            "crof.ai:\n"
+            "  provider: keep-provider\n",
+        )
+
+    def test_flow_mapping_and_symlink_swap_are_refused(self):
+        self.config.write_text(
+            "delegation: {model: old-model}\n",
+            encoding="utf-8",
+        )
+        before = self.config.read_bytes()
+        result = write_delegation_route(self.home, clear=True)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(self.config.read_bytes(), before)
+
+        target = self.home / "external.yaml"
+        target.write_text("credential_sentinel: keep\n", encoding="utf-8")
+        self.config.write_text("model: parent\n", encoding="utf-8")
+        real_open = os.open
+        swapped = False
+
+        def swap_then_open(path, flags, *args):
+            nonlocal swapped
+            if Path(path) == self.config and not swapped:
+                swapped = True
+                self.config.unlink()
+                self.config.symlink_to(target)
+            return real_open(path, flags, *args)
+
+        with mock.patch(
+            "omh.plugin_bundle.omh.delegation_routing.os.open",
+            side_effect=swap_then_open,
+        ):
+            result = write_delegation_route(self.home, model="child")
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(
+            "symlink" in result["error"]
+            or result["error"] == "config changed during route read"
+        )
+        self.assertEqual(
+            target.read_text(encoding="utf-8"),
+            "credential_sentinel: keep\n",
+        )
+
+    def test_quoted_route_keys_and_binary_scalars_are_refused(self):
+        for content in (
+            "delegation:\n  'model': old-model\n",
+            "delegation:\n  model: 0b1010\n",
+        ):
+            with self.subTest(content=content):
+                self.config.write_text(content, encoding="utf-8")
+                before = self.config.read_bytes()
+
+                result = write_delegation_route(self.home, model="new-model")
+
+                self.assertEqual(result["status"], "error")
+                self.assertIn("unsupported delegation mapping", result["error"])
+                self.assertEqual(self.config.read_bytes(), before)
+
+
+class DelegateRouteToolTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.config = self.home / "config.yaml"
+        # Hermetic OMH home: without it the handler would read the developer
+        # machine's real ~/.omh/routing/model-chains.json overrides.
+        self.omh_home = self.home / ".omh"
+
+    def _call(self, **args) -> dict:
+        # The host names the session on every dispatch, and `fallback`
+        # advances only that conversation's own route (#2175).
+        return json.loads(
+            omh_delegate_route_handler(
+                {"hermes_home": str(self.home), "omh_home": str(self.omh_home), **args},
+                session_id="host-session",
+            )
+        )
+
+    def _write_overrides(self, categories: dict) -> None:
+        path = self.omh_home / "routing" / "model-chains.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"schema_version": "mixture_chain_overrides/v1", "categories": categories}
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_provider_routes(self, models: dict) -> None:
+        path = self.omh_home / "routing" / "model-providers.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"schema_version": "model_provider_routes/v1", "models": models}),
+            encoding="utf-8",
+        )
+
+    def test_a_routed_alias_dispatches_the_providers_own_model_name(self):
+        self._write_provider_routes(
+            {"gpt-6-astra": {"provider": "gateway", "model": "vendor/gpt-6-astra"}}
+        )
+        result = self._call(action="set", category="ultrabrain")
+        self.assertEqual(
+            result["applied"],
+            {
+                "alias": "gpt-6-astra",
+                "model": "vendor/gpt-6-astra",
+                "provider": "gateway",
+                "reasoning_effort": "xhigh",
+            },
+        )
+
+    def test_named_provider_mapping_survives_set_fallback_and_clear(self):
+        self._write_overrides({"quick": [
+            {"model": "first", "reasoning_effort": "low"},
+            {"model": "second", "reasoning_effort": "low"},
+        ]})
+        self._write_provider_routes({
+            "first": {"provider": "custom:cli-proxy", "model": "vendor/first"},
+            "second": {"provider": "custom:cli-proxy", "model": "vendor/second"},
+        })
+        first = self._call(action="set", category="quick")
+        self.assertEqual(first["status"], "routed")
+        self.assertEqual(first["applied"]["provider"], "custom:cli-proxy")
+        self.assertEqual(read_delegation_route(self.home), {
+            "model": "vendor/first", "reasoning_effort": "low", "provider": "custom:cli-proxy",
+        })
+        second = self._call(action="fallback", category="quick")
+        self.assertEqual(second["status"], "fell_back")
+        self.assertEqual(second["applied"]["provider"], "custom:cli-proxy")
+        self.assertEqual(read_delegation_route(self.home)["model"], "vendor/second")
+        self.assertEqual(self._call(action="clear")["status"], "cleared")
+        self.assertEqual(read_delegation_route(self.home), {})
+
+    def test_an_unrouted_alias_dispatches_unchanged_with_no_provider(self):
+        self._write_provider_routes(
+            {"some-other-model": {"provider": "gateway", "model": "vendor/other"}}
+        )
+        result = self._call(action="set", category="ultrabrain")
+        self.assertEqual(
+            result["applied"],
+            {
+                "alias": "gpt-6-astra",
+                "model": "gpt-6-astra",
+                "reasoning_effort": "xhigh",
+            },
+        )
+
+    def test_an_explicit_provider_outranks_a_stored_route(self):
+        self._write_provider_routes(
+            {"gpt-5.6-sol": {"provider": "gateway", "model": "vendor/gpt-5.6-sol"}}
+        )
+        result = self._call(
+            action="set", model="gpt-5.6-sol", reasoning_effort="high", provider="direct"
+        )
+        self.assertEqual(
+            result["applied"],
+            {
+                "alias": "gpt-5.6-sol",
+                "model": "gpt-5.6-sol",
+                "provider": "direct",
+                "reasoning_effort": "high",
+            },
+        )
+
+    def test_fallback_finds_the_chain_position_of_a_routed_wire_model(self):
+        """The live route holds the wire model; chains are keyed by alias.
+
+        Without translating back, a routed model reads as absent from its own
+        chain and fallback errors instead of advancing.
+        """
+
+        self._write_overrides(
+            {
+                "quick": [
+                    {"model": "first-model", "reasoning_effort": "low"},
+                    {"model": "second-model", "reasoning_effort": "low"},
+                ]
+            }
+        )
+        self._write_provider_routes(
+            {
+                "first-model": {"provider": "gateway", "model": "vendor/first"},
+                "second-model": {"provider": "gateway", "model": "vendor/second"},
+            }
+        )
+        self._call(action="set", category="quick")
+        self.assertEqual(
+            read_delegation_route(self.home)["model"], "vendor/first"
+        )
+        fallback = self._call(action="fallback")
+        self.assertEqual(fallback["status"], "fell_back")
+        self.assertEqual(
+            fallback["applied"],
+            {
+                "alias": "second-model",
+                "model": "vendor/second",
+                "provider": "gateway",
+                "reasoning_effort": "low",
+            },
+        )
+
+    def test_status_reports_provider_route_state_and_dispatched_values(self):
+        result = self._call(action="status")
+        self.assertEqual(result["provider_routes"], "absent")
+        self.assertEqual(
+            Path(result["provider_routes_path"]),
+            self.omh_home.resolve() / "routing" / "model-providers.json",
+        )
+        self._write_overrides(
+            {"deep": [{"model": "aliased-model", "reasoning_effort": "xhigh"}]}
+        )
+        self._write_provider_routes(
+            {"aliased-model": {"provider": "gateway", "model": "vendor/aliased"}}
+        )
+        applied = self._call(action="status")
+        self.assertEqual(applied["provider_routes"], "applied")
+        self.assertEqual(
+            applied["categories"]["deep"],
+            [
+                {
+                    "alias": "aliased-model",
+                    "model": "vendor/aliased",
+                    "provider": "gateway",
+                    "reasoning_effort": "xhigh",
+                }
+            ],
+        )
+
+        routed = self._call(action="set", category="deep")
+        status = self._call(action="status")
+        self.assertEqual(
+            status["route"],
+            {
+                "alias": "aliased-model",
+                "provider": "gateway",
+                "model": "vendor/aliased",
+                "reasoning_effort": "xhigh",
+            },
+        )
+        self.assertEqual(routed["applied"]["alias"], "aliased-model")
+
+    def test_partial_or_unresolved_wire_routes_fail_without_mutation(self):
+        self._write_provider_routes(
+            {"head": {"provider": "gateway", "model": "vendor/head"}}
+        )
+        self._write_overrides(
+            {"quick": [{"model": "head", "reasoning_effort": "low"}]}
+        )
+        self._call(action="set", category="quick")
+        before = self.config.read_bytes()
+
+        for args in (
+            {"action": "set", "category": "quick", "provider": "other"},
+            {"action": "set", "model": "vendor/unresolved"},
+        ):
+            with self.subTest(args=args):
+                result = self._call(**args)
+                self.assertEqual(result["status"], "error")
+                self.assertEqual(self.config.read_bytes(), before)
+
+    def test_fallback_refuses_wrong_provider_and_shared_origins(self):
+        self._write_provider_routes(
+            {"shared": {"provider": "gateway", "model": "vendor/shared"}}
+        )
+        self._write_overrides(
+            {
+                "quick": [
+                    {"model": "shared", "reasoning_effort": "low"},
+                    {"model": "quick-next", "reasoning_effort": "low"},
+                ],
+                "writing": [
+                    {"model": "shared", "reasoning_effort": "high"},
+                    {"model": "writing-next", "reasoning_effort": "high"},
+                ],
+            }
+        )
+        # Set by model with no category, so nothing records which chain the
+        # route came from. A route set by category falls back inside it
+        # (`FallbackCategoryTest`); this one still fails closed.
+        self._call(action="set", model="shared", reasoning_effort="low")
+        before = self.config.read_bytes()
+        ambiguous = self._call(action="fallback")
+        self.assertEqual(ambiguous["status"], "error")
+        self.assertIn("ambiguous origins", ambiguous["error"])
+        self.assertEqual(self.config.read_bytes(), before)
+
+        # The provenance record is part of the setup now, not decoration.
+        # `fallback` only treats the live keys as its chain position when the
+        # restore record shows this conversation wrote them, which a
+        # hand-written value never is, so the position comes from this
+        # conversation's provenance instead (#2175). The guard under test
+        # here is about the provider identity of the position, so the
+        # position has to be a real one.
+        write_delegation_route(
+            self.home,
+            model="vendor/shared",
+            provider="wrong-provider",
+            reasoning_effort="low",
+        )
+        append_delegation_route_provenance(
+            {
+                "origin": "explicit",
+                "alias": "shared",
+                "wire_model": "vendor/shared",
+                "provider": "wrong-provider",
+                "reasoning_effort": "low",
+                "session_id": "host-session",
+                "written_at": 3.0,
+            },
+            self.omh_home,
+        )
+        before = self.config.read_bytes()
+        wrong = self._call(action="fallback", category="quick")
+        self.assertEqual(wrong["status"], "error")
+        self.assertEqual(wrong["position_source"], "provenance")
+        self.assertEqual(wrong["from"], "vendor/shared")
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_registry_backed_alias_requires_provider_before_fallback(self):
+        self._write_provider_routes(
+            {
+                "head": {"provider": "gateway", "model": "vendor/head"},
+                "next": {"provider": "gateway", "model": "vendor/next"},
+            }
+        )
+        self._write_overrides(
+            {
+                "quick": [
+                    {"model": "head", "reasoning_effort": "low"},
+                    {"model": "next", "reasoning_effort": "low"},
+                ]
+            }
+        )
+        self.config.write_text(
+            "delegation:\n  model: head\n  reasoning_effort: low\n",
+            encoding="utf-8",
+        )
+        # Same reason as above: the position has to be one this
+        # conversation recorded before `fallback` will advance from it.
+        append_delegation_route_provenance(
+            {
+                "origin": "explicit",
+                "alias": "head",
+                "wire_model": "head",
+                "provider": "",
+                "reasoning_effort": "low",
+                "session_id": "host-session",
+                "written_at": 1.0,
+            },
+            self.omh_home,
+        )
+        before = self.config.read_bytes()
+
+        result = self._call(action="fallback", category="quick")
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("requires configured provider identity", result["error"])
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_fallback_aborts_when_active_route_changes_after_selection(self):
+        self._write_overrides(
+            {
+                "quick": [
+                    {"model": "head", "reasoning_effort": "low"},
+                    {"model": "next", "reasoning_effort": "low"},
+                ]
+            }
+        )
+        self._call(action="set", category="quick")
+
+        def concurrent_write(*args, **kwargs):
+            self.config.write_text(
+                "delegation:\n  model: concurrent\n",
+                encoding="utf-8",
+            )
+            return write_delegation_route(*args, **kwargs)
+
+        # The fallback write goes through `delegation_route_restore` now, so
+        # the compare-and-set this pins is patched where it is actually
+        # called; patching the tool module would leave the guard unexercised
+        # and the test green.
+        with mock.patch(
+            "omh.plugin_bundle.omh.delegation_route_restore."
+            "write_delegation_route",
+            side_effect=concurrent_write,
+        ):
+            result = self._call(action="fallback", category="quick")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("active route changed", result["error"])
+
+    def test_an_invalid_provider_route_document_is_ignored_whole(self):
+        path = self.omh_home / "routing" / "model-providers.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "model_provider_routes/v1",
+                    "models": {
+                        "gpt-5.6-sol": {"provider": "gateway", "model": "vendor/ok"},
+                        "bad": {"provider": "gateway", "model": "not a token"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        status = self._call(action="status")
+        self.assertTrue(status["provider_routes"].startswith("invalid: "))
+        result = self._call(action="set", category="ultrabrain")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("invalid:", result["error"])
+
+    def test_an_overridden_chain_routes_and_falls_back_on_the_users_order(self):
+        self._write_overrides({
+            "quick": [
+                {"model": "kimi-k3-ultrafast", "reasoning_effort": "low"},
+                {"model": "glm-5.2-ultrafast", "reasoning_effort": "low"},
+            ]
+        })
+        result = self._call(action="set", category="quick")
+        self.assertEqual(
+            result["applied"],
+            {
+                "alias": "kimi-k3-ultrafast",
+                "model": "kimi-k3-ultrafast",
+                "reasoning_effort": "low",
+            },
+        )
+        fallback = self._call(action="fallback")
+        self.assertEqual(fallback["status"], "fell_back")
+        self.assertEqual(
+            fallback["applied"],
+            {
+                "alias": "glm-5.2-ultrafast",
+                "model": "glm-5.2-ultrafast",
+                "reasoning_effort": "low",
+            },
+        )
+
+    def test_status_reports_the_override_state_and_path(self):
+        result = self._call(action="status")
+        self.assertEqual(result["chain_overrides"], "absent")
+        self.assertEqual(
+            Path(result["chain_overrides_path"]),
+            self.omh_home.resolve() / "routing" / "model-chains.json",
+        )
+        self._write_overrides({"deep": [{"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"}]})
+        applied = self._call(action="status")
+        self.assertEqual(applied["chain_overrides"], "applied")
+        self.assertEqual(
+            applied["categories"]["deep"],
+            [
+                {
+                    "alias": "gpt-5.6-terra",
+                    "provider": "",
+                    "model": "gpt-5.6-terra",
+                    "reasoning_effort": "xhigh",
+                }
+            ],
+        )
+
+    def test_setting_a_category_routes_to_the_chain_head(self):
+        result = self._call(action="set", category="ultrabrain")
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(
+            result["applied"],
+            {
+                "alias": "gpt-6-astra",
+                "model": "gpt-6-astra",
+                "reasoning_effort": "xhigh",
+            },
+        )
+        self.assertEqual(result["category"], "ultrabrain")
+        self.assertIn("Prepared route only", result["evidence_boundary"])
+        self.assertEqual(
+            read_delegation_route(self.home),
+            {"model": "gpt-6-astra", "reasoning_effort": "xhigh"},
+        )
+
+    def test_every_category_now_routes_an_explicit_effort(self):
+        # Owner decision: the category IS the model+effort pair. Before this,
+        # quick and friends declared no effort and every routed lane silently
+        # inherited the parent's level ("everything runs medium").
+        result = self._call(action="set", category="quick")
+        self.assertEqual(
+            result["applied"],
+            {
+                "alias": "glm-5.3-flash",
+                "model": "glm-5.3-flash",
+                "reasoning_effort": "low",
+            },
+        )
+        self.assertEqual(
+            read_delegation_route(self.home),
+            {"model": "glm-5.3-flash", "reasoning_effort": "low"},
+        )
+
+    def test_an_explicit_model_override_wins_over_the_chain_head(self):
+        result = self._call(action="set", category="unspecified-high", model="claude-opus-5-5")
+        self.assertEqual(
+            result["applied"],
+            {"alias": "claude-opus-5-5", "model": "claude-opus-5-5"},
+        )
+        # The chain from the named entry onward: Opus 5.5 sits second in
+        # unspecified-high since 2026-10-13, with Kimi K3 behind it.
+        self.assertEqual(
+            result["fallback_candidates"],
+            [
+                {
+                    "alias": "claude-opus-5-5",
+                    "provider": "",
+                    "model": "claude-opus-5-5",
+                    "reasoning_effort": "medium",
+                },
+                {
+                    "alias": "kimi-k3",
+                    "provider": "",
+                    "model": "kimi-k3",
+                    "reasoning_effort": "medium",
+                },
+            ],
+        )
+
+    def test_an_unknown_category_fails_with_the_valid_vocabulary(self):
+        result = self._call(action="set", category="galaxybrain")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ultrabrain", result["error"])
+
+    def test_fallback_advances_to_the_next_chain_candidate(self):
+        self._call(action="set", category="quick")
+        result = self._call(action="fallback", category="quick")
+        self.assertEqual(result["status"], "fell_back")
+        self.assertEqual(result["category"], "quick")
+        self.assertEqual(result["from"], "glm-5.3-flash")
+        # quick runs the owner-ordered Flash -> Luna -> Haiku 5.5 -> Kimi
+        # sequence (2026-10-13: Fable 5.1 left the tail, a frontier model at
+        # the end of a cheap lane), so a rejected ecosystem cannot exhaust
+        # the chain.
+        self.assertEqual(
+            result["fallback_candidates"],
+            [
+                {
+                    "alias": "claude-haiku-5-5",
+                    "provider": "",
+                    "model": "claude-haiku-5-5",
+                    "reasoning_effort": "low",
+                },
+                {
+                    "alias": "kimi-k3",
+                    "provider": "",
+                    "model": "kimi-k3",
+                    "reasoning_effort": "low",
+                },
+            ],
+        )
+        self.assertEqual(
+            read_delegation_route(self.home),
+            {"model": "gpt-6-luna", "reasoning_effort": "low"},
+        )
+
+    def test_an_exhausted_chain_clears_the_route_to_parent_inheritance(self):
+        # The whole chain was rejected (e.g. a single-provider billing account
+        # serves none of it); the only known-working model is the parent's, so
+        # fallback past the end restores inheritance instead of routing one
+        # more rejection.
+        self._call(action="set", category="quick")
+        for _ in range(3):
+            self._call(action="fallback", category="quick")
+        result = self._call(action="fallback", category="quick")
+        self.assertEqual(result["status"], "exhausted_to_inherit")
+        self.assertEqual(result["category"], "quick")
+        self.assertEqual(result["from"], "kimi-k3")
+        self.assertEqual(read_delegation_route(self.home), {})
+
+    def test_fallback_without_a_route_is_an_error(self):
+        result = self._call(action="fallback")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("no active route", result["error"])
+
+    def test_a_no_thinking_effort_is_refused_for_always_thinking_claude_models(self):
+        # Fable 5.1 / Mythos 5.1 cannot disable thinking: Mythos 400s and
+        # Fable drops the flag silently, so the route never carries it.
+        for model in ("claude-fable-5-1", "claude-mythos-5-1", "fable", "anthropic/claude-mythos-5-1"):
+            result = self._call(action="set", model=model, reasoning_effort="none")
+            self.assertEqual(result["status"], "error", model)
+            self.assertIn("always thinks", result["error"])
+        self.assertEqual(read_delegation_route(self.home), {})
+        # Opus 5.5 joined the always-thinking set: Anthropic documents a
+        # thinking-disabled request on it as a 400 (whats-new-opus-5-5). The
+        # dotted spelling is a gateway's (OpenRouter), matched on purpose, and
+        # the Bedrock id is matched with and without a regional prefix.
+        for model in (
+            "claude-opus-5-5",
+            "anthropic/claude-opus-5-5",
+            "claude-opus-5.5",
+            "anthropic/claude-opus-5.5",
+            "anthropic.claude-opus-5-5",
+            "us.anthropic.claude-opus-5-5",
+            "bedrock/global.anthropic.claude-opus-5-5",
+        ):
+            for effort in ("none", "off"):
+                result = self._call(action="set", model=model, reasoning_effort=effort)
+                self.assertEqual(result["status"], "error", (model, effort))
+                self.assertIn("always thinks", result["error"])
+        self.assertEqual(read_delegation_route(self.home), {})
+        # Opus 5 may still be asked for no thinking; the guard is
+        # generation-scoped, and the 5.5 prefix must not reach back to it.
+        result = self._call(action="set", model="claude-opus-5", reasoning_effort="none")
+        self.assertEqual(result["status"], "routed")
+        result = self._call(action="set", model="anthropic.claude-opus-5", reasoning_effort="none")
+        self.assertEqual(result["status"], "routed")
+        # Sonnet 5.5 joined on 2026-10-01 (its migration guide: `disabled` is
+        # a 400; `between_tools` is a request no Hermes build sends). Sonnet 5
+        # and the bare `sonnet` word, which Claude Code resolves to Sonnet 4.5
+        # off the Anthropic API, keep the no-thinking rung.
+        for model in (
+            "claude-sonnet-5-5",
+            "anthropic/claude-sonnet-5.5",
+            "anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-sonnet-5-5",
+        ):
+            result = self._call(action="set", model=model, reasoning_effort="none")
+            self.assertEqual(result["status"], "error", model)
+            self.assertIn("always thinks", result["error"])
+        for model in ("claude-sonnet-5", "sonnet"):
+            result = self._call(action="set", model=model, reasoning_effort="none")
+            self.assertEqual(result["status"], "routed", model)
+        # Haiku 5.5 is not in the set: its migration guide accepts
+        # `thinking.type=disabled` at effort `high` or below.
+        for model in ("claude-haiku-5-5", "anthropic.claude-haiku-5-5"):
+            result = self._call(action="set", model=model, reasoning_effort="none")
+            self.assertEqual(result["status"], "routed", model)
+        # Opus 5.5 at a documented rung is untouched by the guard.
+        result = self._call(action="set", model="claude-opus-5-5", reasoning_effort="low")
+        self.assertEqual(result["status"], "routed")
+        # A category head on an always-thinking model at its declared effort
+        # is untouched: architect heads on Opus 5.5 at xhigh since 2026-10-13.
+        result = self._call(action="set", category="architect")
+        self.assertEqual(result["status"], "routed")
+        self.assertEqual(result["applied"]["alias"], "claude-opus-5-5")
+
+    def test_an_explicit_category_disambiguates_a_shared_model(self):
+        # claude-opus-5-5:medium heads both writing and capable (accepted
+        # label collision, 2026-10-13); the caller who routed writing passes
+        # the category so fallback advances inside writing.
+        self._call(action="set", category="writing")
+        result = self._call(action="fallback", category="writing")
+        self.assertEqual(result["status"], "fell_back")
+        self.assertEqual(
+            read_delegation_route(self.home),
+            {"model": "claude-sonnet-5-5", "reasoning_effort": "medium"},
+        )
+
+    def test_clear_then_status_shows_an_inherited_route(self):
+        self._call(action="set", category="deep")
+        cleared = self._call(action="clear")
+        self.assertEqual(cleared["status"], "cleared")
+        status = self._call(action="status")
+        self.assertEqual(status["route"], {})
+        self.assertIn("ultrabrain", status["categories"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class StockConfigRouteTest(unittest.TestCase):
+    """Hermes's own stock config spells "inherit" as empty delegation values.
+
+    Observed live: a vanilla install ships `model: ''` / `provider: ''`, the
+    old reader classified the empty quoted string as an unsupported mapping,
+    every category set was refused, and the lanes silently dispatched as
+    inherit while the HUD had no route to explain why.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.config = self.home / "config.yaml"
+
+    def test_stock_empty_values_read_as_no_route_and_are_writable(self):
+        self.config.write_text(
+            "delegation:\n"
+            "  model: ''\n"
+            "  reasoning_effort: medium\n"
+            "  max_iterations: 250\n"
+            "  provider: ''\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(read_delegation_route(self.home), {"reasoning_effort": "medium"})
+
+        result = write_delegation_route(
+            self.home, model="kimi", reasoning_effort="high", provider="og"
+        )
+
+        self.assertEqual(result["status"], "routed")
+        text = self.config.read_text(encoding="utf-8")
+        self.assertIn("max_iterations: 250", text)
+        self.assertIn("model: 'kimi'", text)
+        self.assertNotIn("model: ''", text)
+
+    def test_null_values_are_the_same_inherit_family(self):
+        for value in (" null", " ~"):
+            with self.subTest(value=value):
+                self.config.write_text(
+                    f"delegation:\n  model:{value}\n  provider: og\n", encoding="utf-8"
+                )
+                self.assertEqual(read_delegation_route(self.home), {"provider": "og"})
+                self.assertEqual(
+                    write_delegation_route(self.home, model="kimi")["status"], "routed"
+                )
+
+    def test_a_bare_empty_value_stays_refused_because_it_may_head_a_block(self):
+        # `model:` with nothing after the colon may be a block-mapping header;
+        # treating it as an empty scalar would let the writer drop the header
+        # and orphan its more-indented children into unparseable YAML.
+        content = (
+            "delegation:\n"
+            "  model:\n"
+            "    primary: 'gpt-5'\n"
+            "    secondary: 'kimi'\n"
+            "  provider: og\n"
+        )
+        self.config.write_text(content, encoding="utf-8")
+        before = self.config.read_bytes()
+
+        self.assertEqual(read_delegation_route(self.home), {})
+        result = write_delegation_route(self.home, model="sonnet")
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("unsupported delegation mapping", result["error"])
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_a_plain_scalar_with_a_deeper_continuation_line_is_refused(self):
+        # null, ~, and ordinary tokens are PLAIN scalars, which YAML
+        # continues onto a more-indented following line: OMH would read one
+        # value while Hermes resolves the continuation, and the writer would
+        # orphan that continuation. The lookahead refuses all three shapes.
+        for value in ("null", "~", "sonnet"):
+            with self.subTest(value=value):
+                content = f"delegation:\n  model: {value}\n    junk line\n"
+                self.config.write_text(content, encoding="utf-8")
+                before = self.config.read_bytes()
+
+                self.assertEqual(read_delegation_route(self.home), {})
+                result = write_delegation_route(self.home, model="kimi")
+
+                self.assertEqual(result["status"], "error")
+                self.assertIn("unsupported delegation mapping", result["error"])
+                self.assertEqual(self.config.read_bytes(), before)
+
+    def test_a_deeper_comment_after_a_null_value_is_not_a_continuation(self):
+        self.config.write_text(
+            "delegation:\n  model: null\n    # a comment, not a value\n  provider: og\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(read_delegation_route(self.home), {"provider": "og"})
+        self.assertEqual(write_delegation_route(self.home, model="kimi")["status"], "routed")
+
+    def test_an_empty_last_occurrence_unsets_the_earlier_value(self):
+        self.config.write_text(
+            "delegation:\n  model: first\n  model: ''\n", encoding="utf-8"
+        )
+        self.assertEqual(read_delegation_route(self.home), {})
+
+    def test_the_refusal_names_the_inherit_consequence(self):
+        # A refused write is exactly the moment a lane silently inherits; the
+        # error must say so, so the calling agent never labels the lane with
+        # the category it asked for.
+        self.config.write_text("delegation:\n  model: true\n", encoding="utf-8")
+        result = write_delegation_route(self.home, model="kimi")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("unsupported delegation mapping", result["error"])
+        self.assertIn("inherits the parent model", result["error"])
+
+
+class RouteProvenanceRecordingTest(unittest.TestCase):
+    """Every successful route write records why the next dispatch runs what it runs."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name)
+        self.config = self.home / "config.yaml"
+        self.omh_home = self.home / ".omh"
+
+    def _call(self, *, host_session: str | None = None, **args) -> dict:
+        # `host_session` goes where the host puts it -- a dispatch keyword --
+        # while everything in `args` is model-supplied. That split is what
+        # the ownership field rests on.
+        dispatch = {} if host_session is None else {"session_id": host_session}
+        return json.loads(
+            omh_delegate_route_handler(
+                {"hermes_home": str(self.home), "omh_home": str(self.omh_home), **args},
+                **dispatch,
+            )
+        )
+
+    def test_set_fallback_and_exhaustion_each_record_their_origin(self):
+        first = self._call(action="set", category="quick", host_session="s1")
+        self.assertEqual(first["route_provenance"], "recorded")
+        for _ in range(3):
+            self._call(action="fallback", category="quick", host_session="s1")
+        last = self._call(action="fallback", category="quick", host_session="s1")
+        self.assertEqual(last["status"], "exhausted_to_inherit")
+        self.assertEqual(last["route_provenance"], "recorded")
+
+        records = load_delegation_route_provenance(self.omh_home)
+        self.assertEqual(
+            [record["origin"] for record in records],
+            ["head", *["fallback"] * 3, "exhausted_to_inherit"],
+        )
+        self.assertEqual(records[0]["alias"], "glm-5.3-flash")
+        self.assertEqual(records[1]["from_alias"], "glm-5.3-flash")
+        self.assertEqual(records[1]["alias"], "gpt-6-luna")
+        self.assertEqual(records[-1]["category"], "quick")
+        self.assertEqual(records[-1]["from_alias"], "kimi-k3")
+
+    def test_clear_records_a_superseding_cleared_origin(self):
+        # Without this record, a later child on a coincidentally matching
+        # model would still inherit the pre-clear record's label.
+        self._call(action="set", category="quick")
+        result = self._call(action="clear")
+        self.assertEqual(result["route_provenance"], "recorded")
+        records = load_delegation_route_provenance(self.omh_home)
+        self.assertEqual([record["origin"] for record in records], ["head", "cleared"])
+
+    def test_an_explicit_model_override_records_explicit_origin(self):
+        self._call(action="set", category="quick", model="my-model")
+        records = load_delegation_route_provenance(self.omh_home)
+        self.assertEqual(records[-1]["origin"], "explicit")
+        self.assertEqual(records[-1]["category"], "quick")
+        self.assertEqual(records[-1]["wire_model"], "my-model")
+
+    def test_every_origin_records_the_session_that_prepared_the_route(self):
+        # The host passes `session_id` on every tool dispatch
+        # (`model_tools._execute_tool` -> `registry.dispatch`), and the value
+        # is the durable id `state.db` names, so a session-scoped HUD can
+        # keep its own conversation's routes instead of discarding the whole
+        # history to avoid borrowing someone else's.
+        owner = "20260920_233032_739b8a"
+        self._call(action="set", category="quick", host_session=owner)
+        for _ in range(4):
+            self._call(action="fallback", category="quick", host_session=owner)
+        self._call(action="set", category="quick", model="my-model", host_session=owner)
+        self._call(action="clear", host_session=owner)
+        records = load_delegation_route_provenance(self.omh_home)
+        self.assertEqual(
+            sorted({record["origin"] for record in records}),
+            ["cleared", "exhausted_to_inherit", "explicit", "fallback", "head"],
+        )
+        self.assertEqual({record["session_id"] for record in records}, {owner})
+
+    def test_a_dispatch_that_names_no_session_records_no_owner(self):
+        # Additive-optional: the key is absent, not empty, so the record is
+        # the one this tool wrote before the field existed.
+        self._call(action="set", category="quick")
+        self.assertNotIn("session_id", load_delegation_route_provenance(self.omh_home)[-1])
+
+    def test_a_model_supplied_session_id_cannot_claim_ownership(self):
+        # Tool args come from the model. If one could name the session, a
+        # model could stamp another conversation's id on a route and have
+        # that conversation's HUD relabel children it never dispatched.
+        self._call(action="set", category="quick", session_id="20260920_233032_739b8a")
+        self.assertNotIn("session_id", load_delegation_route_provenance(self.omh_home)[-1])
+
+
+class DelegateRouteSchemaExampleTest(unittest.TestCase):
+    def test_the_category_example_names_the_shipped_ultrabrain_head(self):
+        # The model reads this description; an example naming a model the
+        # chain no longer heads teaches a resolution that does not happen.
+        from omh.plugin_bundle.omh.hermes_delegation import HERMES_MIXTURE_CATEGORY_CHAINS
+        from omh.plugin_bundle.omh.tools.delegate_route_tool import OMH_DELEGATE_ROUTE_SCHEMA
+
+        model_id, effort = HERMES_MIXTURE_CATEGORY_CHAINS["ultrabrain"][0][:2]
+        description = OMH_DELEGATE_ROUTE_SCHEMA["parameters"]["properties"]["category"]["description"]
+        self.assertIn(f"ultrabrain -> {model_id} {effort}", description)

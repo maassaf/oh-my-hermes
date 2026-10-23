@@ -1,0 +1,290 @@
+# Label manifest for oh-my-hermes.
+#
+# This file is the source of truth for the repository's label set and for the
+# path rules that map a changed file to an `area/` label.
+#
+# Nothing in `src/` parses this file. It is read by a human or by the
+# `triage-sweep` skill in `.claude/skills/triage-sweep/`, which shells out to
+# `gh`. Adding a parser to core `omh` would be out of scope: OMH makes no
+# network calls, and label management is repository maintenance, not product
+# behavior.
+#
+# To apply this manifest to the repository, run the `triage-sweep` skill with
+# `sync-labels`, or create labels by hand with:
+#   gh label create "<name>" --color "<color>" --description "<description>"
+#
+# Conventions:
+#   area/*   what part of the product the change is about  (many per issue/PR)
+#   kind     what type of change it is                     (flat, GitHub defaults)
+#   needs-*  what the maintainer still has to do           (workflow state)
+#   risk/*   why this one deserves a closer look           (rare, deliberate)
+#
+# Glob semantics, stated because matchers disagree and the disagreement is not
+# academic — it silently mislabels:
+#   `*`   matches within one path segment and does NOT cross `/`
+#   `**`  matches across segments, so `src/routing/**` covers nested files
+#   a bare `*.md` therefore means root-level only, never `a/b/c.md`
+# Write globs that are correct under this reading. When a rule needs to catch
+# a specific file wherever it sits, list the path instead of leaning on `*`.
+#
+# GitHub rejects a label `description` longer than 100 characters.
+
+labels:
+  # ---------------------------------------------------------------------------
+  # area/* - product surface. Derived from the real `src/` layout on main.
+  # `paths` are matched against the PR's changed files.
+  # ---------------------------------------------------------------------------
+
+  - name: area/skills
+    color: "0e8a16"
+    description: Skill catalog, rendering, and the generated SKILL.md surface
+    paths:
+      - "src/skills/**"
+      - "src/catalogs/**"
+      - "skills/**"
+      - "tests/test_skill*.py"
+      - "tests/test_catalog*.py"
+      - "docs/ADDING-A-SKILL.md"
+
+  - name: area/routing
+    color: "1d76db"
+    description: Chat router, intent detection, triggers, and overroute guards
+    paths:
+      - "src/routing/**"
+      - "tests/test_routing*.py"
+      - "tests/test_chat*.py"
+      - "tests/test_intent*.py"
+
+  - name: area/memory
+    color: "5319e7"
+    description: Memory provider, recall, lifecycle, and eviction
+    paths:
+      - "src/plugin_bundle/omh/memory*.py"
+      - "src/plugin_bundle/omh/hermes_memory.py"
+      - "tests/test_memory*.py"
+      - "tests/test_hermes_memory*.py"
+      - "docs/MEMORY.md"
+      - "docs/MEMORY_CONTEXT.md"
+
+  - name: area/coding
+    color: "b60205"
+    description: Coding delegation, prepared handoffs, and fanout dispatch
+    paths:
+      - "src/coding/**"
+      - "src/omh/coding_delegation.py"
+      - "tests/test_coding*.py"
+      - "tests/test_fanout*.py"
+      - "tests/test_agentic_playbook.py"
+      - "docs/FANOUT.md"
+      - "docs/PLAYBOOKS.md"
+
+  - name: area/workflows
+    color: "c2e0c6"
+    description: Workflow engine, artifacts, state, and learning cycles
+    paths:
+      - "src/workflows/**"
+      - "tests/test_workflow*.py"
+      - "tests/test_dynamic_workflow*.py"
+
+  - name: area/runtime
+    color: "fbca04"
+    description: Run lifecycle, artifact recording, local store, and system paths
+    paths:
+      - "src/runtime/**"
+      - "src/system/**"
+      - "tests/test_runtime*.py"
+      - "tests/test_artifacts*.py"
+      - "tests/test_local_store*.py"
+
+  - name: area/plugin
+    color: "006b75"
+    description: Hermes plugin bundle, MCP bridge, hooks, and awareness delivery
+    paths:
+      - "src/plugin_bundle/**"
+      - "src/mcp/**"
+      - "tests/test_plugin*.py"
+      - "tests/test_mcp*.py"
+      - "tests/test_awareness*.py"
+
+  - name: area/cli
+    color: "bfd4f2"
+    description: The `omh` command surface and its output contracts
+    paths:
+      - "src/commands/**"
+      - "src/omh/cli/**"
+      - "tests/test_cli*.py"
+      - "tests/test_command*.py"
+
+  - name: area/surfaces
+    color: "d4c5f9"
+    description: HUD, menubar, evidence copy, and other presentation surfaces
+    paths:
+      - "src/surfaces/**"
+      - "tests/test_hud*.py"
+      - "tests/test_menubar*.py"
+
+  - name: area/setup
+    color: "f9d0c4"
+    description: Installer, update, doctor, release packaging, and smoke paths
+    paths:
+      - "src/install/**"
+      - "src/maintenance/**"
+      - "src/profiles/**"
+      - "tests/test_install*.py"
+      - "tests/test_release*.py"
+      - "tests/test_doctor*.py"
+      - "docs/INSTALLATION.md"
+      - "docs/RELEASE.md"
+
+  - name: area/quality
+    color: "0052cc"
+    description: Quality gates, conformance, governance, and evidence contracts
+    paths:
+      - "src/quality/**"
+      - "src/conformance/**"
+      - "tests/test_quality*.py"
+      - "tests/test_conformance*.py"
+      - "tests/test_*governance*.py"
+      - "tests/test_broad_exception_policy.py"
+      - "docs/HARNESS_QUALITY.md"
+
+  - name: area/capabilities
+    color: "2b7489"
+    description: Capability registry, families, and version-aware projection
+    paths:
+      - "src/capabilities/**"
+      - "tests/test_*capabilit*.py"
+      - "docs/CAPABILITIES.md"
+      - "docs/CAPABILITY_IMPACT.md"
+
+  - name: area/codegraph
+    color: "c5def5"
+    description: Call-graph scanner, schema, and renderer
+    paths:
+      - "src/codegraph/**"
+      - "tests/test_codegraph*.py"
+      - "docs/CODEGRAPH.md"
+
+  - name: area/wrapper
+    color: "bfdadc"
+    description: Wrapper session contracts, notifications, and localization
+    paths:
+      - "src/wrapper/**"
+      - "tests/test_wrapper*.py"
+
+  - name: area/docs
+    color: "84b6eb"
+    description: Hand-written documentation
+    # Listed explicitly rather than as a bare `*.md`. Matchers disagree about
+    # whether `*.md` crosses a `/`, and under the permissive reading it
+    # swallows every SKILL.md in the repo. Name the root docs instead.
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "REVIEW.md"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "SECURITY.md"
+      - "CHANGELOG.md"
+
+  - name: area/ci
+    color: "000000"
+    description: CI workflows, packaging metadata, and repository configuration
+    paths:
+      - ".github/**"
+      - ".claude/**"
+      - "pyproject.toml"
+      - ".editorconfig"
+
+  # ---------------------------------------------------------------------------
+  # risk/* - deliberate flags. Applied when the rule fires, not by area.
+  # ---------------------------------------------------------------------------
+
+  - name: risk/generated-artifact
+    color: "e11d21"
+    # GitHub rejects label descriptions over 100 characters. Keep every
+    # `description` in this file under that limit or `gh label create` fails.
+    description: >-
+      Touches a generated file. Check the source of truth changed and the byte
+      gates were rerun.
+    paths:
+      - "docs/WORKFLOWS.md"
+      - "docs/ROLES.md"
+      - "skills/*/SKILL.md"
+      - "skills/*/references/*.md"
+      - "examples/use-cases/g1-g10-demo-cards.json"
+      - "src/plugin_bundle/omh/tools/capability_families.json"
+
+  - name: risk/contract-change
+    color: "d93f0b"
+    description: >-
+      Changes a frozen contract, schema version, or exact-count assertion.
+      Needs a compatibility note.
+
+  # ---------------------------------------------------------------------------
+  # needs-* - workflow state, owned by the maintainer.
+  # ---------------------------------------------------------------------------
+
+  - name: needs-triage
+    color: "ededed"
+    description: Not yet routed to an area or priority
+    # Applied by the issue forms in .github/ISSUE_TEMPLATE/.
+
+  - name: needs-evidence
+    color: "fef2c0"
+    description: >-
+      Claims execution, review, or CI results that are not backed by observed
+      output
+
+  - name: needs-review
+    color: "fbca04"
+    description: Waiting on maintainer review
+
+  # ---------------------------------------------------------------------------
+  # Pre-existing GitHub defaults, restated so this file is the whole picture.
+  # ---------------------------------------------------------------------------
+
+  - name: bug
+    color: "d73a4a"
+    description: Something isn't working
+
+  - name: enhancement
+    color: "a2eeef"
+    description: New feature or request
+
+  - name: documentation
+    color: "0075ca"
+    description: Improvements or additions to documentation
+
+  - name: good first issue
+    color: "7057ff"
+    description: Good for newcomers
+
+  - name: help wanted
+    color: "008672"
+    description: Extra attention is needed
+
+  - name: question
+    color: "d876e3"
+    description: Further information is requested
+
+  - name: duplicate
+    color: "cfd3d7"
+    description: This issue or pull request already exists
+
+  - name: invalid
+    color: "e4e669"
+    description: This doesn't seem right
+
+  - name: wontfix
+    color: "ffffff"
+    description: This will not be worked on
+
+  - name: dependencies
+    color: "0366d6"
+    description: Pull requests that update a dependency file
+
+  - name: github_actions
+    color: "000000"
+    description: Pull requests that update GitHub Actions code

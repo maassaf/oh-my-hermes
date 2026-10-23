@@ -1,0 +1,14 @@
+{
+  "schema_version": "omh_memory_block/v2",
+  "block_id": "block-known-v2",
+  "revision": 1,
+  "label": "known-v2",
+  "description": "A reviewed reference block.",
+  "value": "Reference facts remain bounded.",
+  "limit": 2000,
+  "tier": "reference",
+  "scope": {"kind": "project", "ref": "default"},
+  "source_class": "omh_local",
+  "admission": {"state": "pending_review"},
+  "retention": {"class": "durable", "admitted_at": "2026-07-30T12:00:00Z"}
+}

@@ -1,0 +1,46 @@
+# Code owners for oh-my-hermes.
+#
+# All three maintainers are requested for review on every pull request. Later
+# patterns win, so the catch-all comes first and the higher-risk surfaces are
+# restated below to keep them obvious to anyone reading this file.
+#
+# GitHub never requests review from the PR's own author, so a PR opened by one
+# maintainer requests the other two. An entry only takes effect for an account
+# with write access to this repository; entries for anyone else are ignored
+# silently, with no error anywhere.
+
+*                                               @rlaope @frirenai @sionic-khope
+
+# Contracts and product direction.
+/AGENTS.md                                      @rlaope @frirenai @sionic-khope
+/CLAUDE.md                                      @rlaope @frirenai @sionic-khope
+/REVIEW.md                                      @rlaope @frirenai @sionic-khope
+/CONTRIBUTING.md                                @rlaope @frirenai @sionic-khope
+/docs/DIRECTION.md                              @rlaope @frirenai @sionic-khope
+
+# Maintenance procedures.
+/docs/TRIAGE-SWEEP.md                           @rlaope @frirenai @sionic-khope
+/docs/REVIEW-SWEEP.md                           @rlaope @frirenai @sionic-khope
+/.claude/                                       @rlaope @frirenai @sionic-khope
+
+# Generated artifacts. Edits belong in the source of truth, never here.
+/docs/WORKFLOWS.md                              @rlaope @frirenai @sionic-khope
+/docs/ROLES.md                                  @rlaope @frirenai @sionic-khope
+/skills/                                        @rlaope @frirenai @sionic-khope
+/examples/use-cases/                            @rlaope @frirenai @sionic-khope
+/src/plugin_bundle/omh/tools/capability_families.json  @rlaope @frirenai @sionic-khope
+
+# Sources of truth behind those artifacts.
+/src/skills/                                    @rlaope @frirenai @sionic-khope
+/src/capabilities/                              @rlaope @frirenai @sionic-khope
+
+# Routing precision and the count assertions that pin it.
+/src/routing/                                   @rlaope @frirenai @sionic-khope
+
+# The one sanctioned execution surface.
+/src/coding/                                    @rlaope @frirenai @sionic-khope
+
+# Release, packaging, and CI.
+/.github/                                       @rlaope @frirenai @sionic-khope
+/pyproject.toml                                 @rlaope @frirenai @sionic-khope
+/src/install/                                   @rlaope @frirenai @sionic-khope

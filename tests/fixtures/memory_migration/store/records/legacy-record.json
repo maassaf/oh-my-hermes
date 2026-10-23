@@ -1,0 +1,11 @@
+{
+  "schema_version": "project_memory_record/v1",
+  "record_id": "legacy-record",
+  "revision": 1,
+  "record_type": "fact",
+  "summary": "Use the repository release process.",
+  "scope": {"kind": "project", "ref": "default"},
+  "review_status": "approved",
+  "ttl": {"ttl_days": 30, "expires_at": "2026-08-29T12:00:00Z"},
+  "staleness": {"stale_after": "2026-10-28T12:00:00Z"}
+}

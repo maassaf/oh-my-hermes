@@ -1,0 +1,123 @@
+---
+name: "omh-ask"
+description: "[omh] Outside AI critique wanted: consulting an external advisor when configured. Use when the user says: ask, external advisor, ask claude, ask gemini, consult claude, consult gemini, opinion from claude, opinion from gemini."
+license: MIT
+author: "oh-my-hermes maintainers"
+metadata:
+  hermes:
+    tags: [workflow, oh-my-hermes, review]
+    category: review
+    phase: external-advice
+    role: reviewer
+    quality_tier: evidence-gated
+    related_skills: [omh-jev-ask]
+---
+
+# Ask
+
+This is a Hermes-native `ask` workflow skill.
+
+## Why This Exists
+
+`ask` exists to put one outside model's critique beside the agent's own answer when the user wants it, as advice the agent weighs in the open rather than a verdict it adopts, from the advisor the user named or configured and never from a default one.
+
+## Do Not Use When
+
+- The request is casual chat, a status-only acknowledgement, or another workflow has stronger routing evidence.
+- The user needs implementation, review, CI, merge, or external publishing evidence that has not been delegated or observed.
+- The user wants typed yes/no, pick-one, or scored probabilities from Jev over supplied text; use `omh-jev-ask`.
+
+## Examples
+
+Good example:
+
+- Prompt: ask: ask Claude as an external advisor to critique this plugin bridge plan before implementation.
+- Expected behavior: Prepare an advisor prompt, capture the response boundary, and summarize reusable critique.
+- Why: The user wants outside review before committing to a direction.
+
+Bad example:
+
+- Prompt: ask: treat casual chat or unaccepted work as if this workflow already produced verified results.
+- Expected behavior: Ask a clarification question or route to a narrower workflow instead of forcing `ask`.
+- Why: The request lacks the required inputs or would overclaim work that Hermes did not observe.
+
+## Completion Checklist
+
+- Findings or no-issue results are grounded in concrete file, artifact, command, or source evidence.
+- Open questions, residual risk, and missing verification are named.
+- Fixes or follow-up work are separate handoffs unless the user explicitly asked to implement them.
+
+## Recovery Notes
+
+- If the reviewed target is missing, inspect the requested artifact or ask one target question.
+- If independent verification is unavailable, report the gap and avoid an approval-style claim.
+
+## Workflow Lane
+
+- Current lane: **Automation and status** (`achievements`, `workspace-audit`, `production-audit`, `live-incident-response`, `automation-blueprint`, `github-event-ops`, `github-issue-intake`, `buzz`, `+40 more`) - schedules, status, health, and ops review.
+- If intent belongs to another lane, hand back to `oh-my-hermes` or name the adjacent workflow.
+- Shared product, routing, compatibility, and evidence rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`.
+
+## When to Use
+
+Use only when an external advisor is configured and would materially improve the answer.
+
+    Strong routing signals: `ask`, `$ask`, `external advisor`, `ask claude`, `ask gemini`, `consult claude`, `consult gemini`, `opinion from claude`, `opinion from gemini`, `second opinion`, `claude 의견`, `gemini 의견`
+
+## Catalog Metadata
+
+Category: `review`
+Phase: `external-advice`
+Hermes role: `reviewer`
+Quality tier: `evidence-gated`
+Reasoning demand: `standard`
+
+Quality bar:
+
+- Before consulting, name the question, why an outside answer could change yours, and the advisor the user named or configured; with none configured, say so and answer without one.
+- Report the advice as one input: which points you accept, which you reject and why, and none of it as a verdict, a review, or a verified fact.
+- When the advisor is a coding CLI the user named and Hermes' bundled skill for it (`claude-code`, `codex`, or `opencode`) is in your skill list, take only the invocation from that skill and keep the run to advice, with no edits; load `references/cli-advisors.md`. None of these CLIs is the default advisor.
+
+Handoff policy:
+
+Use as optional advice gathering; evaluate the advice in Hermes and delegate coding changes separately.
+
+Required inputs:
+
+- question
+- context summary
+- why external advice helps
+
+Expected outputs:
+
+- advisor summary
+- accepted/rejected advice
+- decision note
+
+Artifact expectations:
+
+- advisor transcript reference only when explicitly captured
+
+Safety rules:
+
+- Use only when configured and materially useful.
+- Treat advisor output as evidence to evaluate, not authority.
+- Do not send secrets or private prompts without explicit opt-in.
+
+## Runtime Evidence
+
+Preferred harness for this skill: `critic`.
+
+```sh
+omh runtime record --skill ask --harness critic --status started
+```
+
+Record observed delegation results; otherwise return `not_available` or `not_observed`.
+Prepared OMH routing is not execution, review, CI, merge-readiness, or merge evidence.
+- When wrapper metadata includes `memory_review_card/v1` or `handoff_context_pack/v1`, treat it as reviewed OMH-local or wrapper-supplied context only. Use conflict-free context summaries to shape plans and handoffs, but do not claim Hermes internal memory was read or changed.
+Preserve workflow intent and stop conditions; verify before claiming completion.
+Reply in the user's own words and the host's own voice: its SOUL.md persona owns reply language, tone, speech level, and sentence endings, progress updates included (where it sets no language, use the one the user wrote in), and OMH shapes structure and content only; OMH's record terms (surface, lane, wrapper, handoff, evidence boundary, not_observed) stay in records and tool calls, never in the sentence the user reads unless they ask about one; and when a real unresolved user decision or a useful briefing discussion remains, offer one specific, content-linked question. Completed work needs no question; omit unrelated non-action footers and generic offers to continue.
+
+Use Hermes-native subagent/delegation features when available: native subagents -> Hermes delegation when available, otherwise sequential lanes.
+
+Shared product, compatibility, topology, memory, harness, and execution rules: `skill_view(name='omh-routing', file_path='references/skill-common-rail.md')`. Load it when applicable; otherwise name an unavailable capability.

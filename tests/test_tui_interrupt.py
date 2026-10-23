@@ -1,0 +1,149 @@
+"""Interrupting a turn: the `interrupting…` row until Hermes stops, and the queue that does not go on by itself.
+
+Claude Code puts queued input back into the prompt when a turn is
+interrupted; the OMH TUI does the same with what Up would take back, so a
+person who stops a turn is never surprised by the next queued prompt
+starting. A queued `!` line is never joined to a prompt (`_recall_queue`),
+so what Up would not take with the rest stays queued, held, until the person
+sends a prompt or takes it back with Up. Every case drives an `App` over the
+recording client from `test_tui_modes`.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from _tui_lines import lines_text
+from test_tui_modes import SID, answer, drawn, make_app, notices, type_text
+from omh.tui.app import INTERRUPTING, QUEUE_HELD_HINT, QueuedLine, queue_lines
+from omh.tui.gateway import Event
+from omh.tui.keys import CHAR, ENTER, ESCAPE, UP, Key
+from omh.tui.theme import DEFAULT_THEME
+from omh.tui.transcript import NOTICE_ERROR
+
+CTRL_C = Key(CHAR, "c", ctrl=True)
+INTERRUPTED = Event("message.complete", SID, {"text": "", "status": "interrupted"})
+
+
+def running(*queued: QueuedLine):
+    app, client = make_app(busy=True)
+    app.queued.extend(queued)
+    return app, client
+
+
+def submitted(client) -> list[str]:
+    return [params["text"] for params in client.named("prompt.submit")]
+
+
+class InterruptingRowTests(unittest.TestCase):
+    def test_after_esc_the_working_row_says_interrupting_and_offers_no_esc(self) -> None:
+        app, client = running()
+        self.assertIn("esc to interrupt", "\n".join(drawn(app)))
+        app._on_input(Key(ESCAPE))
+        self.assertEqual(client.named("session.interrupt"), [{"session_id": SID}])
+        screen = "\n".join(drawn(app))
+        self.assertIn(INTERRUPTING, screen)
+        self.assertNotIn("esc to interrupt", screen)
+        self.assertNotIn("esc interrupt", screen)  # the info line does not offer it either
+
+    def test_ctrl_c_shows_it_too(self) -> None:
+        app, _client = running()
+        app._on_input(CTRL_C)
+        self.assertIn(INTERRUPTING, "\n".join(drawn(app)))
+
+    def test_it_goes_when_the_turn_ends(self) -> None:
+        app, _client = running()
+        app._on_input(Key(ESCAPE))
+        app._on_event(INTERRUPTED)
+        self.assertNotIn(INTERRUPTING, "\n".join(drawn(app)))
+        self.assertFalse(app.interrupting)
+
+    def test_a_refused_interrupt_brings_the_spinner_back_and_says_so(self) -> None:
+        app, client = running()
+        app._on_input(Key(ESCAPE))
+        answer(app, client, error={"code": 4009, "message": "no turn to interrupt"})
+        self.assertFalse(app.interrupting)
+        self.assertIn("esc to interrupt", "\n".join(drawn(app)))
+        self.assertEqual(notices(app, NOTICE_ERROR), ["Hermes did not interrupt the turn: no turn to interrupt."])
+
+    def test_a_second_esc_asks_again(self) -> None:
+        app, client = running()
+        app._on_input(Key(ESCAPE))
+        app._on_input(Key(ESCAPE))
+        self.assertEqual(len(client.named("session.interrupt")), 2)
+
+
+class QueueAfterInterruptTests(unittest.TestCase):
+    def test_queued_prompts_come_back_to_the_composer_joined_in_order_and_nothing_is_sent(self) -> None:
+        app, client = running(QueuedLine("first"), QueuedLine("second"))
+        app._on_input(Key(ESCAPE))
+        app._on_event(INTERRUPTED)
+        self.assertEqual(submitted(client), [])
+        self.assertEqual(app.composer.text, "first\nsecond")
+        self.assertEqual(list(app.queued), [])
+        self.assertIn("Interrupted: what you queued is back in the composer, not sent.", notices(app))
+
+    def test_a_turn_that_ends_on_its_own_still_sends_the_next_queued_prompt(self) -> None:
+        app, client = running(QueuedLine("first"), QueuedLine("second"))
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(submitted(client), ["first"])
+
+    def test_a_turn_refused_after_the_interrupt_returns_the_queue_too(self) -> None:
+        # Hermes cancels a turn whose agent was not ready yet with a bare error event, not message.complete.
+        app, client = running(QueuedLine("first"))
+        app._on_input(CTRL_C)
+        app._on_event(Event("error", SID, {"message": "Turn cancelled before the agent was ready"}))
+        self.assertEqual(submitted(client), [])
+        self.assertEqual(app.composer.text, "first")
+
+    def test_a_queued_shell_line_stays_held_and_the_next_prompt_lets_the_queue_go_on(self) -> None:
+        app, client = running(QueuedLine("first"), QueuedLine("!ls", shell=True), QueuedLine("third"))
+        app._on_input(Key(ESCAPE))
+        app._on_event(INTERRUPTED)
+        self.assertEqual(app.composer.text, "first")  # Up's rule: a `!` line is never joined to a prompt
+        self.assertEqual([line.text for line in app.queued], ["!ls", "third"])
+        self.assertTrue(app.queue_held)
+        self.assertIn(QUEUE_HELD_HINT, "\n".join(drawn(app)))
+        app._drain_queue()
+        self.assertEqual((submitted(client), client.named("shell.exec")), ([], []))  # held: nothing goes by itself
+        app._on_input(Key(ENTER))  # the person sends "first": the queue goes on behind it
+        self.assertFalse(app.queue_held)
+        self.assertEqual(submitted(client), ["first"])
+        app._on_event(Event("message.complete", SID, {"text": "done"}))
+        self.assertEqual(client.named("shell.exec"), [{"command": "ls"}])
+
+    def test_up_takes_held_lines_back(self) -> None:
+        app, _client = running(QueuedLine("!ls", shell=True), QueuedLine("two"))
+        app._on_input(Key(ESCAPE))
+        app._on_event(INTERRUPTED)
+        self.assertEqual(app.composer.text, "!ls")  # the shell line first: it comes back on its own
+        app._set_composer("")
+        app._on_input(Key(UP))
+        self.assertEqual(app.composer.text, "two")
+        self.assertFalse(app.queue_held)
+
+    def test_a_draft_typed_while_interrupting_is_kept_and_the_queue_is_held(self) -> None:
+        app, client = running(QueuedLine("first"))
+        app._on_input(Key(ESCAPE))
+        type_text(app, "my draft")
+        app._on_event(INTERRUPTED)
+        self.assertEqual(app.composer.text, "my draft")
+        self.assertEqual([line.text for line in app.queued], ["first"])
+        self.assertTrue(app.queue_held)
+        self.assertEqual(submitted(client), [])
+
+    def test_a_new_session_drops_the_hold(self) -> None:
+        app, _client = running(QueuedLine("!ls", shell=True))
+        app._on_input(Key(ESCAPE))
+        app._on_event(INTERRUPTED)
+        app._on_new_session({"session_id": "live-2", "stored_session_id": "stored-2"})
+        self.assertFalse(app.queue_held)
+        self.assertFalse(app.interrupting)
+
+    def test_the_held_rows_say_why_they_wait(self) -> None:
+        rows = lines_text(queue_lines(["!ls"], 60, 3, DEFAULT_THEME, hint=QUEUE_HELD_HINT))
+        self.assertTrue(rows[0].endswith(QUEUE_HELD_HINT), rows)
+
+
+if __name__ == "__main__":
+    unittest.main()

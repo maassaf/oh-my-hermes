@@ -1,0 +1,44 @@
+{
+  "name": "oh-my-hermes",
+  "version": "__OMH_VERSION__",
+  "description": "Hermes-native workflow skills and the OMH maintenance CLI.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "omh": "bin/omh.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rlaope/oh-my-hermes.git"
+  },
+  "homepage": "https://rlaope.github.io/oh-my-hermes/",
+  "bugs": {
+    "url": "https://github.com/rlaope/oh-my-hermes/issues"
+  },
+  "keywords": [
+    "hermes",
+    "agent",
+    "skills",
+    "workflow",
+    "automation"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "omhDistribution": {
+    "wheel": "vendor/__OMH_WHEEL__",
+    "wheelSha256": "__OMH_SHA256__",
+    "cacheTreeSha256": "__OMH_CACHE_TREE_SHA256__"
+  }
+}

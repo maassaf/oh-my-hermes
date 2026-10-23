@@ -1,0 +1,610 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Runs the main-push lane set on any branch, so a lane that only main runs
+  # (Linux 3.13) can be observed green before the change that adds it merges.
+  workflow_dispatch:
+
+# One run per pull request, and one per pushed or dispatched ref: a new push
+# cancels the run it superseded. On a pull request nobody merges the superseded
+# commit, and its run holds runners the current commit is waiting for (#1752:
+# 14 of 25 active runs were stale). On main the same holds for a burst of
+# merges: in the 7 days to 2026-09-26, 32 of 86 main runs were superseded by a
+# later main push before they finished, at ~140 job-minutes each, and one
+# 5-push burst at 03:48 on 09-26 left test jobs queued for 13 to 17 minutes.
+# The tradeoff: a red main is attributed to a range of merges rather than one
+# commit, and bisecting it takes a dispatch. The tip run still covers every
+# merged commit, because it tests the tree that contains them all. Timing
+# history is saved only by a green main run, so a cancelled run saves nothing
+# and the next plan restores the newest entry the burst's tip run saved.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Shard planner (issue #1294). Static source discovery never imports test
+  # modules; syntax or unsupported dynamic discovery shapes fail here before
+  # any shard runs. Identical inventory + timing history is byte-identical.
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Prepare committed timing fallback
+        run: |
+          mkdir -p timings-history
+          cp tools/test_sharding/timings.json timings-history/timings.json
+      - name: Restore bounded timing history
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: timings-history
+          key: test-sharding-timings-${{ github.run_id }}
+          restore-keys: test-sharding-timings-
+      # --shard0-offset is a declared constant, not a measurement taken here:
+      # the step-duration medians of the non-test gates each lane's shard 0
+      # also runs, read from recent CI runs (2026-09-26). Linux shard 0: ~25 s
+      # of docs/compile/smoke gates. Windows shard 0: ~90 s (fanout smoke 20 s,
+      # installer end-to-end 19 s, default locations/PATH 20 s, managed-command
+      # round trip 4 s, PowerShell parse/redirect ~7 s, compile). Re-read them
+      # when those gates change. The serial quarantine runs after the last
+      # shard's tests, and the planner seeds its duration onto that shard.
+      - name: Plan test shards
+        run: >-
+          python tools/test_sharding/plan.py --shards 2 --shard0-offset 25
+          --durations timings-history/timings.json
+          --quarantine tools/test_sharding/quarantine.json
+          --out shard-plan/plan.json
+      # Windows runs the same suite more than twice as slowly as Linux, so its lane
+      # gets its own 4-shard plan over the same inventory and quarantine; the
+      # Linux lanes keep 2. The aggregate validates each lane against the plan
+      # that lane actually ran.
+      - name: Plan Windows test shards
+        run: >-
+          python tools/test_sharding/plan.py --shards 4 --shard0-offset 90
+          --durations timings-history/timings.json
+          --quarantine tools/test_sharding/quarantine.json
+          --out shard-plan/plan-windows.json
+      - name: Upload shard plan
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-plan
+          path: |
+            shard-plan/plan.json
+            shard-plan/plan-windows.json
+
+  test:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # A pull request runs the 3.11 floor only; a main push (and a dispatch)
+        # adds 3.13, the newest supported interpreter, where 3.12 used to run.
+        # Windows keeps 3.12 on every event. In the 7 days to 2026-09-26, 0 of
+        # 40 failed runs were red only on Linux 3.12, while a defect only 3.13
+        # shows (Path.resolve on a symlink loop, fixed by 13696e5d) had merged
+        # with every lane green. aggregate.py's
+        # EXPECTED_LANES spells the same sets per event and fails closed when
+        # one of them is missing; the tests pin the two together.
+        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.11"]') || fromJSON('["3.11", "3.13"]') }}
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history so the whitespace gate below can resolve a merge base
+          # against the PR's base branch. A shallow clone has none, and
+          # `git diff --check` with no range compares the working tree to the
+          # index -- always empty after checkout, so it would always pass.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Download shard plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shard-plan
+          path: shard-plan
+      # Every discovered test is assigned to exactly one shard by the plan;
+      # each matrix leg runs only its own list and uploads its result even
+      # on failure, so the aggregate job can reconcile exact-once coverage.
+      - name: Unit tests (shard ${{ matrix.shard }})
+        run: >-
+          python tools/test_sharding/run.py --plan shard-plan/plan.json
+          --lane linux-${{ matrix.python-version }} --shard ${{ matrix.shard }} --workers 2
+          --attempt ${{ github.run_attempt }}
+          --out results/result-linux-${{ matrix.python-version }}-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-result-linux-${{ matrix.python-version }}-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: results/result-linux-${{ matrix.python-version }}-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json
+      # Serial quarantine (issue #1294): shared-state tests (process-wide
+      # signal handlers, spawned child processes, bound sockets) run in their
+      # own process after this lane's last shard, the one the planner leaves
+      # lightest, on the same OS and Python. Entries in
+      # tools/test_sharding/quarantine.json carry owner + reason metadata; a
+      # stale or metadata-less entry fails the plan.
+      - name: Quarantined tests (serial)
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        env:
+          PYTHONPATH: tests
+        run: >-
+          python tools/test_sharding/run.py --plan shard-plan/plan.json
+          --lane linux-${{ matrix.python-version }} --quarantine
+          --attempt ${{ github.run_attempt }}
+          --out results/result-quarantine-linux-${{ matrix.python-version }}-attempt-${{ github.run_attempt }}.json
+      - name: Upload quarantine result
+        if: ${{ always() && matrix.shard == 1 }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-result-quarantine-linux-${{ matrix.python-version }}-attempt-${{ github.run_attempt }}
+          path: results/result-quarantine-linux-${{ matrix.python-version }}-attempt-${{ github.run_attempt }}.json
+      # Non-test gates run once per python-version (shard 0) instead of once
+      # per shard; sharding them would duplicate cost without new signal.
+      - name: Static analysis (ruff)
+        if: matrix.python-version == '3.11' && matrix.shard == 0
+        run: uv run --group lint ruff check src tests tools packaging
+      - name: Compile package
+        if: matrix.shard == 0
+        run: python -m compileall src
+      - name: Generated workflow docs check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs workflows --check
+      - name: Generated Agent Skills projection check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs agent-skills --check
+      - name: Generated role docs check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs roles --check
+      - name: Generated capability families check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs capability-families --check
+      - name: Generated skill shortlist index check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs skill-shortlist --check
+      - name: Generated ULW README region check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs ulw-inventory --check
+      - name: Generated ULW site region check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs ulw-site --check
+      # The public shipped-chain table in docs/INSTALLATION.md agreed with the
+      # catalog only because whoever retired a model generation remembered the
+      # doc too. This step is what fails when they do not; it names the rows.
+      - name: Generated chain table region check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs chain-table --check
+      # Structure, not equality: a page can stay byte-identical to its producer
+      # and still have left the public map. This gate is the one that notices.
+      # The windows leg reaches the same verdict through
+      # tests/test_documentation_navigation.py, which audits this repository --
+      # separator, case, and encoding handling is where the two hosts differ.
+      - name: Documentation navigation check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs navigation --check
+      # Continuity, not structure: the source registry can be well-formed and
+      # still carry a row whose checkpoint never moved with the change that
+      # resolved its finding. This gate fails on half an atomic close from
+      # either side, and names the row and the stable reason code.
+      - name: Skill-source closure check
+        if: matrix.shard == 0
+        run: python -m omh.cli docs skill-sources --check
+      - name: Whitespace and conflict-marker check
+        if: matrix.python-version == '3.11' && matrix.shard == 0 && github.event_name == 'pull_request'
+        run: git diff --check "origin/${{ github.base_ref }}...HEAD"
+      - name: Dry-run install smoke
+        if: matrix.shard == 0
+        run: python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke install --dry-run
+      - name: Stable-channel dry-run smoke
+        if: matrix.shard == 0
+        run: python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke install --dry-run --channel stable --version 0.1.0
+      - name: Capability probe smoke
+        if: matrix.shard == 0
+        run: python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke probe
+      - name: Hermes release smoke plan
+        if: matrix.shard == 0
+        run: python -m omh.cli release hermes-smoke
+      - name: Release readiness checklist
+        if: matrix.shard == 0
+        run: python -m omh.cli release checklist --json
+      - name: Installed OMH command smoke
+        if: matrix.shard == 0
+        run: |
+          omh --help
+          omh --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke release hermes-smoke --install-path setup --omh-command omh --include-command-smoke
+      - name: Runtime artifact smoke
+        if: matrix.shard == 0
+        run: |
+          run_json="$(python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime record --skill oh-my-hermes --harness coding-handling --status started)"
+          run_id="$(printf '%s' "$run_json" | python -c 'import json,sys; print(json.load(sys.stdin)["run"]["run_id"])')"
+          python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime delegate --run "$run_id" --requested --not-observed --result not_observed
+          python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime wrapper --run "$run_id" --prompt-dispatched --response-observed --completion-status completed
+          python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime validate --run "$run_id"
+          python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime export --redacted
+          python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime show "$run_id"
+          python -m omh.cli --omh-home /tmp/omh-smoke --hermes-home /tmp/hermes-smoke runtime runs
+
+  test-windows:
+    # The ubuntu matrix above cannot observe Windows-only behavior: the
+    # platform guards from #771/#778, drive-letter and path-separator
+    # handling, and byte-stable managed-file writes. Since #781 made the
+    # suite Windows-green, the full suite runs here as an enforcing gate;
+    # POSIX-only surfaces skip through the tests/_platform_support guards.
+    needs: plan
+    runs-on: windows-latest
+    strategy:
+      # Each shard runs a disjoint slice of the suite, so cancelling the sibling
+      # when one fails leaves that half unmeasured and the blast radius unknown
+      # -- and it cancelled a different half on each of two consecutive heads.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Download shard plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shard-plan
+          path: shard-plan
+      - name: Native fanout fixture smoke
+        if: matrix.shard == 0
+        env:
+          PYTHONPATH: tests
+        run: python -c "from five_issue_cases import sessions, capacity, diagnostics; assert sessions.run_case('S1')['pass']; assert capacity.run_case('C2')['pass']; assert diagnostics.run_case('D5')['pass']"
+      - name: Unit tests (shard ${{ matrix.shard }})
+        env:
+          PYTHONPATH: tests
+        run: >-
+          python tools/test_sharding/run.py --plan shard-plan/plan-windows.json
+          --lane windows-3.12 --shard ${{ matrix.shard }} --workers 2
+          --attempt ${{ github.run_attempt }}
+          --out results/result-windows-3.12-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json
+      - name: Upload shard result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-result-windows-3.12-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: results/result-windows-3.12-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json
+      # Serial quarantine in its own process after the lane's last shard; see
+      # the same step in the `test` job.
+      - name: Quarantined tests (serial)
+        if: ${{ !cancelled() && matrix.shard == 3 }}
+        env:
+          PYTHONPATH: tests
+        run: >-
+          python tools/test_sharding/run.py --plan shard-plan/plan-windows.json
+          --lane windows-3.12 --quarantine
+          --attempt ${{ github.run_attempt }}
+          --out results/result-quarantine-windows-3.12-attempt-${{ github.run_attempt }}.json
+      - name: Upload quarantine result
+        if: ${{ always() && matrix.shard == 3 }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-result-quarantine-windows-3.12-attempt-${{ github.run_attempt }}
+          path: results/result-quarantine-windows-3.12-attempt-${{ github.run_attempt }}.json
+      - name: Compile package
+        if: matrix.shard == 0
+        run: python -m compileall src
+      # install.ps1 cannot be parsed or executed anywhere else, so its only
+      # oracle is this job. Parse first for a precise syntax error, then run it
+      # end to end against the checkout and prove the round trip: the shim it
+      # writes must run, and `omh uninstall` must recognize that shim as its
+      # own -- the failure #848 would otherwise reintroduce.
+      # Both hosts, because they hide each other's bugs: 5.1 is the stated
+      # target and the reason for the ASCII-only and no-VT constraints, while 7
+      # is stricter about native argument passing. A parse error in either is a
+      # broken installer for somebody.
+      - name: Windows installer syntax (PowerShell 7)
+        if: matrix.shard == 0
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1).ProviderPath, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object {
+              Write-Error "install.ps1($($_.Extent.StartLineNumber),$($_.Extent.StartColumnNumber)): $($_.Message)"
+            }
+            exit 1
+          }
+          Write-Host "install.ps1 parsed clean on $($PSVersionTable.PSVersion)"
+      - name: Windows installer syntax (Windows PowerShell 5.1)
+        if: matrix.shard == 0
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1).ProviderPath, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object {
+              Write-Error "install.ps1($($_.Extent.StartLineNumber),$($_.Extent.StartColumnNumber)): $($_.Message)"
+            }
+            exit 1
+          }
+          Write-Host "install.ps1 parsed clean on $($PSVersionTable.PSVersion)"
+      - name: Windows installer redirect headers (PowerShell 7)
+        if: matrix.shard == 0
+        shell: pwsh
+        run: ./tests/powershell/Test-OmhRedirectLocation.ps1
+      - name: Windows installer redirect-header mutation (PowerShell 7)
+        if: matrix.shard == 0
+        shell: pwsh
+        run: ./tests/powershell/Test-OmhRedirectLocation.ps1 -InjectRegression
+      - name: Windows installer redirect headers (Windows PowerShell 5.1)
+        if: matrix.shard == 0
+        shell: powershell
+        run: ./tests/powershell/Test-OmhRedirectLocation.ps1
+      - name: Windows installer redirect-header mutation (Windows PowerShell 5.1)
+        if: matrix.shard == 0
+        shell: powershell
+        run: ./tests/powershell/Test-OmhRedirectLocation.ps1 -InjectRegression
+      - name: Windows installer latest release (PowerShell 7)
+        if: matrix.shard == 0
+        shell: pwsh
+        run: ./tests/powershell/Test-OmhLatestRelease.ps1
+      - name: Windows installer latest-release mutation (PowerShell 7)
+        if: matrix.shard == 0
+        shell: pwsh
+        run: ./tests/powershell/Test-OmhLatestRelease.ps1 -InjectRegression
+      - name: Windows installer latest release (Windows PowerShell 5.1)
+        if: matrix.shard == 0
+        shell: powershell
+        run: ./tests/powershell/Test-OmhLatestRelease.ps1
+      - name: Windows installer latest-release mutation (Windows PowerShell 5.1)
+        if: matrix.shard == 0
+        shell: powershell
+        run: ./tests/powershell/Test-OmhLatestRelease.ps1 -InjectRegression
+      - name: Windows installer end-to-end
+        if: matrix.shard == 0
+        shell: pwsh
+        env:
+          OMH_CHANNEL: local
+          OMH_ADD_TO_PATH: '0'
+          OMH_RUN_SETUP: '0'
+          # Pin the interpreter to the one setup-python installed. Left to its
+          # own discovery order the installer would prefer the `py` launcher,
+          # which points at the image's bundled Python, not this job's.
+          OMH_PYTHON: python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'omh-install-smoke'
+          $env:OMH_PACKAGE_URL = (Get-Location).Path
+          $env:OMH_VENV_DIR = Join-Path $work 'venv'
+          $env:OMH_BIN_DIR = Join-Path $work 'bin'
+          ./install.ps1
+          # A script's `exit 1` sets $LASTEXITCODE without failing the step, so
+          # without this a pip failure would be reported as a missing shim.
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+          $shim = Join-Path $env:OMH_BIN_DIR 'omh.cmd'
+          if (-not (Test-Path $shim)) { throw "installer did not write $shim" }
+          & $shim --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'omh.cmd shim did not run' }
+      - name: Windows managed-command round trip
+        if: matrix.shard == 0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'omh-install-smoke'
+          $env:OMH_VENV_DIR = Join-Path $work 'venv'
+          $env:OMH_BIN_DIR = Join-Path $work 'bin'
+          $homes = @('--omh-home', (Join-Path $work 'omh-home'), '--hermes-home', (Join-Path $work 'hermes-home'))
+          $shim = Join-Path $env:OMH_BIN_DIR 'omh.cmd'
+          & $shim @homes setup | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'omh setup failed from the installed shim' }
+          $preview = & $shim @homes uninstall --dry-run --json | ConvertFrom-Json
+          if ($preview.command_package.status -ne 'would_remove') {
+            throw "uninstall did not recognize the installer-managed command: $($preview.command_package | ConvertTo-Json -Compress)"
+          }
+          Write-Host 'installer-managed command recognized on Windows'
+      # The steps above pin OMH_VENV_DIR/OMH_BIN_DIR and OMH_ADD_TO_PATH, which
+      # skips exactly the code a real `irm | iex` user runs: the %LOCALAPPDATA%
+      # defaults and the user-PATH edit. Run once with neither set. The registry
+      # assertion is the point -- writing PATH back through
+      # [Environment]::SetEnvironmentVariable would silently turn it from
+      # REG_EXPAND_SZ to REG_SZ and flatten every %VAR% entry on the machine.
+      - name: Windows installer default locations and PATH
+        if: matrix.shard == 0
+        shell: pwsh
+        env:
+          OMH_CHANNEL: local
+          OMH_PYTHON: python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $before = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          $beforeKind = if ($before -and $before.GetValue('Path')) { $before.GetValueKind('Path') } else { 'ExpandString' }
+          $env:OMH_PACKAGE_URL = (Get-Location).Path
+          ./install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
+          $shim = Join-Path $env:LOCALAPPDATA 'omh\bin\omh.cmd'
+          if (-not (Test-Path $shim)) { throw "installer did not use the %LOCALAPPDATA% default: $shim missing" }
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          if ($key.GetValueKind('Path') -ne 'ExpandString') {
+            throw "installer flattened the user PATH from $beforeKind to $($key.GetValueKind('Path'))"
+          }
+          $stored = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          if ($stored -notlike '*omh\bin*') { throw 'installer did not add its bin dir to the user PATH' }
+          Write-Host 'default locations and user PATH edit verified'
+
+  # Fail-closed reconciliation (issue #1294). Runs no matter how the shard
+  # jobs ended: a failed or cancelled leg is red here even if its result
+  # artifact never arrived, and the aggregate re-proves that discovered ==
+  # sharded + quarantined == accounted, with no missing or duplicate tests.
+  # Make this job (with test and test-windows) a required
+  # status check so no shard outcome can produce a partial green.
+  aggregate:
+    needs: [test, test-windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Require green shard jobs
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          TEST_WINDOWS_RESULT: ${{ needs.test-windows.result }}
+        run: |
+          for result in "$TEST_RESULT" "$TEST_WINDOWS_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "required test job did not succeed: $result"
+              exit 1
+            fi
+          done
+      - name: Download shard plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shard-plan
+          path: shard-plan
+      # Every shard result carries its run attempt in the artifact name, the
+      # file name, and the JSON. "Re-run failed jobs" leaves the earlier
+      # attempt's artifacts in the run, and download-artifact's same-name
+      # "latest" pick orders by artifact ID, which is not creation order
+      # (run 36302750878 kept attempt 1's red result), so names never repeat
+      # and aggregate.py reconciles each shard's newest attempt (#1894).
+      - name: Download shard results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shard-result-*
+          path: results
+          merge-multiple: true
+      - name: Reconcile shard results
+        run: >-
+          python tools/test_sharding/aggregate.py --plan shard-plan/plan.json
+          --quarantine tools/test_sharding/quarantine.json
+          --results-dir results
+          --event ${{ github.event_name }}
+          --lane-plan windows-3.12=shard-plan/plan-windows.json
+          --timings-out timings-merged/timings.json
+      # Timing history is performance data only. Successful main runs save a
+      # bounded immutable cache entry; the next plan restores it over the
+      # committed empty-or-reviewed fallback without writing repository state.
+      - name: Stage bounded timing history
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p timings-history
+          cp timings-merged/timings.json timings-history/timings.json
+      - name: Save bounded timing history
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: timings-history
+          key: test-sharding-timings-${{ github.run_id }}
+
+  distribution:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Build and install exact npm and Bun artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          root="$PWD/dist/distribution"
+          wheel_dir="$root/python"
+          package_dir="$root/npm"
+          tarball_dir="$root/npm-tarball"
+          uv build --wheel --out-dir "$wheel_dir"
+          wheel="$(find "$wheel_dir" -name '*.whl' -print -quit)"
+          version="$(uv run tools/package_manager/metadata.py --version)"
+          uv run tools/package_manager/stage_npm.py \
+            --wheel "$wheel" \
+            --output "$package_dir"
+          npm publish --dry-run "$package_dir"
+          mkdir -p "$tarball_dir"
+          npm pack --pack-destination "$tarball_dir" "$package_dir" >/dev/null
+          tarball="$tarball_dir/oh-my-hermes-$version.tgz"
+
+          npm_prefix="$RUNNER_TEMP/omh-npm"
+          npm install --global --ignore-scripts --prefix "$npm_prefix" "$tarball"
+          OMH_CACHE_DIR="$RUNNER_TEMP/omh-npm-cache" \
+            OMH_PYTHON=python \
+            "$npm_prefix/bin/omh" --version
+
+          export BUN_INSTALL="$RUNNER_TEMP/omh-bun"
+          bun install --global "$tarball"
+          OMH_CACHE_DIR="$RUNNER_TEMP/omh-bun-cache" \
+            OMH_PYTHON=python \
+            "$BUN_INSTALL/bin/omh" --version
+      - name: Install and test local Homebrew formula
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$(find "$PWD/dist/distribution/python" -name '*.whl' -print -quit)"
+          version="$(uv run tools/package_manager/metadata.py --version)"
+          formula="$RUNNER_TEMP/omh.rb"
+          uv run tools/package_manager/render_homebrew.py \
+            --version "$version" \
+            --wheel "$wheel" \
+            --output "$formula"
+          ruby -c "$formula"
+          brew style "$formula"
+          brew tap-new --no-git omh/local-qa
+          tap="$(brew --repository omh/local-qa)"
+          mkdir -p "$tap/Formula"
+          cp "$formula" "$tap/Formula/omh.rb"
+          brew install omh/local-qa/omh
+          brew test omh/local-qa/omh
+          "$(brew --prefix omh)/bin/omh" --version
+          brew uninstall omh
+          brew untap --force omh/local-qa
+          brew developer off
+      - name: Clean distribution QA state
+        if: always()
+        shell: bash
+        run: |
+          if command -v brew >/dev/null 2>&1; then
+            brew uninstall --force omh >/dev/null 2>&1 || true
+            brew untap --force omh/local-qa >/dev/null 2>&1 || true
+            brew developer off >/dev/null 2>&1 || true
+          fi
+          rm -rf \
+            "$RUNNER_TEMP/omh-npm" \
+            "$RUNNER_TEMP/omh-npm-cache" \
+            "$RUNNER_TEMP/omh-bun" \
+            "$RUNNER_TEMP/omh-bun-cache" \
+            "$RUNNER_TEMP/omh.rb"

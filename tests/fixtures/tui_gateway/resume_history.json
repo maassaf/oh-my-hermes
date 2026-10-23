@@ -1,0 +1,118 @@
+{
+ "fixture": {
+  "hermes_commit": "6c61c3e27dd5e2a6c7dd08f17b4ee42d43e8534d",
+  "recorded": "2026-10-17",
+  "source": "the `messages` a real Hermes session.resume answers, built by tui_gateway.session_history._history_to_messages from the stored session of a live OMH TUI walk (deepseek-v4.1-flash-ultrafast): its first turn, one call each of read_file, read_file, patch, terminal, terminal",
+  "made": "the first 12 messages kept; the walk's working directory rewritten to /fixture/demo; nothing else changed"
+ },
+ "messages": [
+  {
+   "role": "user",
+   "text": "Do these steps in order using your tools, one call each: 1) read_file README.md. 2) patch calc.py to add a function div(a, b) that returns a / b after mul. 3) terminal: sleep 6 && python3 -c \"import calc; print(calc.div(6, 3))\". 4) terminal: ls does-not-exist. Then reply in one short sentence.",
+   "timestamp": 1792208302.711009,
+   "row_id": 1
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "timestamp": 1792208304.48145,
+   "row_id": 2,
+   "reasoning": "Let me just do the steps. Working dir is .../demo. Let me read README.md and calc.py exists? Step 2 requires patching calc.py — need to read it first to know content. The instruction says one call each in order. I'll do step 1.\n\nLet me start with read_file README.md.",
+   "reasoning_content": "Let me just do the steps. Working dir is .../demo. Let me read README.md and calc.py exists? Step 2 requires patching calc.py — need to read it first to know content. The instruction says one call each in order. I'll do step 1.\n\nLet me start with read_file README.md."
+  },
+  {
+   "role": "tool",
+   "name": "read_file",
+   "context": "README.md",
+   "tool_call_id": "call_6af52bf063eb40d299a31591",
+   "timestamp": 1792208304.558893,
+   "args": {
+    "path": "README.md"
+   }
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "timestamp": 1792208305.062739,
+   "row_id": 4,
+   "reasoning_content": " "
+  },
+  {
+   "role": "tool",
+   "name": "read_file",
+   "context": "calc.py",
+   "tool_call_id": "call_964ca5af00dd4a4bbb5abd22",
+   "timestamp": 1792208305.072109,
+   "args": {
+    "path": "calc.py"
+   }
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "timestamp": 1792208305.660502,
+   "row_id": 6,
+   "reasoning_content": " "
+  },
+  {
+   "role": "tool",
+   "name": "patch",
+   "context": "calc.py",
+   "content": "{\"success\": true, \"diff\": \"--- a//fixture/demo/calc.py\\n+++ b//fixture/demo/calc.py\\n@@ -8,3 +8,7 @@\\n \\n def mul(a, b):\\n     return a * b\\n+                \\n+                \\n+def div(a, b):  \\n+    return a / b\\n\", \"files_modified\": [\"/fixture/demo/calc.py\"], \"lint\": {\"status\": \"ok\", \"output\": \"\"}, \"resolved_path\": \"/fixture/demo/calc.py\"}",
+   "tool_call_id": "call_3811385a457948b68a035064",
+   "timestamp": 1792208305.8184152,
+   "display_metadata": {
+    "tool_result_metadata": {
+     "inline_diff": "  ┊ review diff\n\u001b[38;2;218;165;32ma//fixture/demo/calc.py → b//fixture/demo/calc.py\u001b[0m\n\u001b[38;2;139;134;130m@@ -8,3 +8,7 @@\u001b[0m\n\u001b[38;2;184;134;11m \u001b[0m\n\u001b[38;2;184;134;11m def mul(a, b):\u001b[0m\n\u001b[38;2;184;134;11m     return a * b\u001b[0m\n\u001b[38;2;255;255;255;48;2;19;87;20m+                \u001b[0m\n\u001b[38;2;255;255;255;48;2;19;87;20m+                \u001b[0m\n\u001b[38;2;255;255;255;48;2;19;87;20m+def div(a, b):  \u001b[0m\n\u001b[38;2;255;255;255;48;2;19;87;20m+    return a / b\u001b[0m"
+    }
+   },
+   "args": {
+    "path": "calc.py",
+    "old_string": "def mul(a, b):\n    return a * b",
+    "new_string": "def mul(a, b):\n    return a * b\n\n\ndef div(a, b):\n    return a / b"
+   }
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "timestamp": 1792208306.828043,
+   "row_id": 8,
+   "reasoning_content": " "
+  },
+  {
+   "role": "tool",
+   "name": "terminal",
+   "context": "sleep 6 + 1 command",
+   "tool_call_id": "call_7c84f4d5ae48453495a50a6d",
+   "timestamp": 1792208549.39425,
+   "args": {
+    "command": "sleep 6 && python3 -c \"import calc; print(calc.div(6, 3))\""
+   }
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "timestamp": 1792208550.177902,
+   "row_id": 10,
+   "reasoning_content": " "
+  },
+  {
+   "role": "tool",
+   "name": "terminal",
+   "context": "ls does-not-exist",
+   "tool_call_id": "call_accca7622c154594958cf0ec",
+   "timestamp": 1792208550.223495,
+   "args": {
+    "command": "ls does-not-exist"
+   }
+  },
+  {
+   "role": "assistant",
+   "text": "Done — `div` added to calc.py, `calc.div(6, 3)` printed `2.0`, and `ls does-not-exist` failed as expected.\n\nI'm Hermes Agent; type /help to see available commands.",
+   "timestamp": 1792208551.335331,
+   "row_id": 12,
+   "reasoning": "Reply in one short sentence, plus the intro note. The note says in closing sentences of the same reply introduce myself and mention /help. That conflicts with \"reply in one short sentence.\" I'll keep it minimal: one sentence on the result, then the intro. Actually the note asks for 1-2 sentences intro. Instruction says reply in one short sentence. I'll do: one sentence result, then a short second sentence intro mentioning /help.",
+   "reasoning_content": "Reply in one short sentence, plus the intro note. The note says in closing sentences of the same reply introduce myself and mention /help. That conflicts with \"reply in one short sentence.\" I'll keep it minimal: one sentence on the result, then the intro. Actually the note asks for 1-2 sentences intro. Instruction says reply in one short sentence. I'll do: one sentence result, then a short second sentence intro mentioning /help."
+  }
+ ]
+}

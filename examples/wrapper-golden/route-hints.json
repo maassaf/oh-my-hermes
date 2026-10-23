@@ -1,0 +1,82 @@
+{
+  "schema_version": "route_hint_golden_examples/v1",
+  "purpose": "Transport-free route-hint examples for Hermes chat wrappers that want an OMH card before shell approval or plugin load.",
+  "examples": [
+    {
+      "scenario": "visual_summary_hint",
+      "source": "discord",
+      "fixture": "examples/wrapper-events/discord-route-hint-visual.json",
+      "expected_response": {
+        "schema_version": "chat_route_hint_response/v1",
+        "kind": "workflow_route_hint",
+        "reason_code": "",
+        "primary_workflow": "img-summary",
+        "next_action": "prepare_visual_prompt_card",
+        "action_ids": [
+          "open_workflow",
+          "route_for_me",
+          "open_picker"
+        ],
+        "generic_tool_checkpoint": "omh_generic_tool_checkpoint/v1",
+        "messenger_rendering": "messenger_route_hint_rendering/v1",
+        "safe_to_render_without_shell_approval": true
+      },
+      "claim_boundary": "Hint-only card; not workflow selection, image generation, visual QA, attachment, delivery, or observed execution evidence."
+    },
+    {
+      "scenario": "missed_route_learning_hint",
+      "source": "slack",
+      "fixture": "examples/wrapper-events/slack-route-hint-missed-route.json",
+      "expected_response": {
+        "schema_version": "chat_route_hint_response/v1",
+        "kind": "workflow_route_hint",
+        "reason_code": "",
+        "primary_workflow": "workflow-learning",
+        "next_action": "record_missed_route",
+        "action_ids": [
+          "open_workflow",
+          "route_for_me",
+          "open_picker"
+        ],
+        "generic_tool_checkpoint": "omh_generic_tool_checkpoint/v1",
+        "messenger_rendering": "messenger_route_hint_rendering/v1",
+        "safe_to_render_without_shell_approval": true
+      },
+      "claim_boundary": "Hint-only card; not regression capture, skill patch approval, future behavior proof, or observed workflow evidence."
+    },
+    {
+      "scenario": "thank_you_direct_answer",
+      "source": "telegram",
+      "fixture": "examples/wrapper-events/telegram-route-hint-thanks.json",
+      "expected_response": {
+        "schema_version": "chat_route_hint_response/v1",
+        "kind": "direct_answer_route_hint",
+        "reason_code": "direct_answer",
+        "primary_workflow": "",
+        "next_action": "answer_directly",
+        "action_ids": [],
+        "generic_tool_checkpoint": "omh_generic_tool_checkpoint/v1",
+        "messenger_rendering": "messenger_route_hint_rendering/v1",
+        "safe_to_render_without_shell_approval": true
+      },
+      "claim_boundary": "Direct-answer card; no workflow, picker, or clarification is offered, and nothing has been selected, run, or delivered."
+    },
+    {
+      "scenario": "host_turn_direct_answer",
+      "source": "discord",
+      "fixture": "examples/wrapper-events/discord-route-hint-blueprint-seed.json",
+      "expected_response": {
+        "schema_version": "chat_route_hint_response/v1",
+        "kind": "direct_answer_route_hint",
+        "reason_code": "host_command_turn",
+        "primary_workflow": "",
+        "next_action": "answer_directly",
+        "action_ids": [],
+        "generic_tool_checkpoint": "omh_generic_tool_checkpoint/v1",
+        "messenger_rendering": "messenger_route_hint_rendering/v1",
+        "safe_to_render_without_shell_approval": true
+      },
+      "claim_boundary": "Direct-answer card for a turn Hermes wrote from its /blueprint template; Hermes follows its own instruction, and no OMH workflow is selected, run, or delivered."
+    }
+  ]
+}

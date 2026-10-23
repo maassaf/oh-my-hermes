@@ -1,0 +1,143 @@
+{
+ "configs": {
+  "hermes/config.yaml": "version: 1\nmodel:\n  default: gpt-6.1-sol\n  fallback_providers:\n    - provider: zai\n      model: glm-5.3\nauxiliary:\n  compression:\n    provider: og\n    fallback_chain:\n      - provider: zai\n        model: glm-5.3\n\nskills:\n  external_dirs:\n    - {ROOT}/omh/skills\n\nplugins:\n  enabled:\n    - omh\n  entries:\n    omh:\n      settings:\n        omh_home: '{ROOT}/omh'\n\ndisplay:\n  sections:\n    thinking: collapsed\n    tools: collapsed\n    subagents: collapsed\n  skin: omh-crimson\n  interface: tui\n\nmemory:\n  provider: omh\n",
+  "hermes/profiles/bot/config.yaml": "plugins:\n  enabled:\n    - omh\n  entries:\n    omh:\n      settings:\n        omh_home: {ROOT}/bot-store\n\nskills:\n  external_dirs:\n    - {ROOT}/omh/skills\n\ndisplay:\n  sections:\n    thinking: collapsed\n    tools: collapsed\n    subagents: collapsed\n  skin: omh-amber\n  interface: tui\n\nmemory:\n  provider: omh\n",
+  "hermes/profiles/shared/config.yaml": "version: 1\ndisplay:\n  sections:\n    thinking: collapsed\n    tools: collapsed\n    subagents: collapsed\n  interface: tui\n  skin: omh\n\nskills:\n  external_dirs:\n    - {ROOT}/omh/skills\n\nplugins:\n  enabled:\n    - omh\n  entries:\n    omh:\n      settings:\n        omh_home: '{ROOT}/omh'\n\nmemory:\n  provider: omh\n"
+ },
+ "configs_before_setup": {
+  "hermes/config.yaml": "version: 1\nmodel:\n  default: gpt-6.1-sol\n  fallback_providers:\n    - provider: zai\n      model: glm-5.3\nauxiliary:\n  compression:\n    provider: og\n",
+  "hermes/profiles/bot/config.yaml": "plugins:\n  entries:\n    omh:\n      settings:\n        omh_home: {ROOT}/bot-store\n",
+  "hermes/profiles/shared/config.yaml": "version: 1\ndisplay:\n  interface: cli\n  skin: ares\n"
+ },
+ "hermes_config_writes": {
+  "hermes/config.yaml": {
+   "config_path": "{ROOT}/hermes/config.yaml",
+   "containers_created": [
+    "display",
+    "display.sections",
+    "memory",
+    "plugins",
+    "plugins.enabled",
+    "plugins.entries",
+    "skills",
+    "skills.external_dirs"
+   ],
+   "keys": {
+    "auxiliary.compression.fallback_chain": [
+     "    fallback_chain:",
+     "      - provider: zai",
+     "        model: glm-5.3"
+    ],
+    "display.interface": "tui",
+    "display.sections": [
+     "subagents",
+     "thinking",
+     "tools"
+    ],
+    "display.skin": "omh",
+    "memory.provider": "omh",
+    "plugins.enabled": [
+     "omh"
+    ],
+    "plugins.entries.omh.settings.omh_home": "{ROOT}/omh",
+    "skills.external_dirs": [
+     "{ROOT}/omh/skills"
+    ]
+   },
+   "recorded_at": "2026-10-14T04:26:03Z",
+   "restores": {},
+   "schema_version": "omh_hermes_config_writes/v1"
+  },
+  "hermes/profiles/bot/config.yaml": {
+   "config_path": "{ROOT}/hermes/profiles/bot/config.yaml",
+   "containers_created": [
+    "display",
+    "display.sections",
+    "memory",
+    "plugins.enabled",
+    "skills",
+    "skills.external_dirs"
+   ],
+   "keys": {
+    "display.interface": "tui",
+    "display.sections": [
+     "subagents",
+     "thinking",
+     "tools"
+    ],
+    "display.skin": "omh",
+    "memory.provider": "omh",
+    "plugins.enabled": [
+     "omh"
+    ],
+    "skills.external_dirs": [
+     "{ROOT}/omh/skills"
+    ]
+   },
+   "recorded_at": "2026-10-14T04:26:03Z",
+   "restores": {},
+   "schema_version": "omh_hermes_config_writes/v1"
+  },
+  "hermes/profiles/shared/config.yaml": {
+   "config_path": "{ROOT}/hermes/profiles/shared/config.yaml",
+   "containers_created": [
+    "display.sections",
+    "memory",
+    "plugins",
+    "plugins.enabled",
+    "plugins.entries",
+    "skills",
+    "skills.external_dirs"
+   ],
+   "keys": {
+    "display.interface": "tui",
+    "display.sections": [
+     "subagents",
+     "thinking",
+     "tools"
+    ],
+    "display.skin": "omh",
+    "memory.provider": "omh",
+    "plugins.enabled": [
+     "omh"
+    ],
+    "plugins.entries.omh.settings.omh_home": "{ROOT}/omh",
+    "skills.external_dirs": [
+     "{ROOT}/omh/skills"
+    ]
+   },
+   "recorded_at": "2026-10-14T04:26:04Z",
+   "restores": {
+    "display.interface": "cli",
+    "display.skin": "ares"
+   },
+   "schema_version": "omh_hermes_config_writes/v1"
+  }
+ },
+ "recorded_by": [
+  "v3.0.2: omh --omh-home {ROOT}/omh --hermes-home {ROOT}/hermes setup --with-plugin --yes --no-menubar --json",
+  "v3.0.2: omh --omh-home {ROOT}/omh --hermes-home {ROOT}/hermes theme use crimson",
+  "v3.0.2: omh --omh-home {ROOT}/bot-store --hermes-home {ROOT}/hermes/profiles/bot theme use amber"
+ ],
+ "recorded_on": "2026-10-14",
+ "skin_manifest": {
+  "files": {
+   "omh-amber.yaml": {
+    "sha256": "3265a4c5eba1b0529195a43c9737e241dfa6c93b61e1978b995b9bfca61b89dc"
+   },
+   "omh-crimson.yaml": {
+    "sha256": "018a2ff8d4357ea3192b4f303a0044ff7efa11b551ab21172b2d5343c2d38352"
+   },
+   "omh-mono.yaml": {
+    "sha256": "1421ca9482b0cb9d5be9d4869215c40cca96e009fab57fb65321b219ea0d39eb"
+   },
+   "omh.yaml": {
+    "sha256": "122577bf7c5080e3632a9f4c26eae318d0fcdb853405580ae5365659b6e38309"
+   }
+  },
+  "schema_version": "omh_skin_manifest/v2"
+ },
+ "source_commit": "117f67a23",
+ "source_tag": "v3.0.2",
+ "widget_manifest_schema": "omh_tui_widget_manifest/v1"
+}

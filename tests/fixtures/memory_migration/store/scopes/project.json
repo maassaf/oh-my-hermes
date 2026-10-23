@@ -1,0 +1,13 @@
+{
+  "schema_version": "omh_memory_scope/v1",
+  "scope": {"kind": "project", "ref": "default"},
+  "items": {
+    "legacy-scope": {
+      "item_id": "legacy-scope",
+      "revision": 1,
+      "key": "release_process",
+      "summary": "Keep release decisions reviewed.",
+      "value": "Review release decisions before use."
+    }
+  }
+}

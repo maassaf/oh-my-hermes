@@ -1,0 +1,3464 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+import errno
+import hashlib
+import importlib.resources as resources
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+import unittest
+from types import ModuleType
+from typing import Any
+from unittest import mock
+from pathlib import Path, PureWindowsPath
+from tempfile import TemporaryDirectory
+
+from _cli_harness import run_cli
+from _local_package import load_local_package
+from _platform_support import requires_hermes_host, requires_posix, requires_symlinks
+
+load_local_package()
+
+from _legacy_display import brand_legacy_home, seed_legacy_skins, seed_legacy_widget
+from omh.commands import setup as _setup_module
+from omh.config_adapter import external_dirs
+from omh.paths import resolve_paths
+from omh.install.plugin_loader_observation import observe_real_loader_registration, resolve_hermes_code_root
+from omh.plugin_pack import inspect_plugin_bundle
+from omh.install.plugin_pack import (
+    PLUGIN_MANAGED_MANIFEST,
+    PluginPackError,
+    _SmokeContext,
+    _collect_resource_records,
+    install_plugin_bundle,
+    validate_tool_definitions,
+)
+from omh.plugin_bundle.omh.tools import evidence_tool
+from omh.plugin_bundle.omh.metadata import PROVIDED_HOOKS, PROVIDED_TOOLS, TOOL_FILE_STEMS
+from omh.release_smoke_core import CommandResult
+from _module_patch import patch_modules
+
+
+class FakeHermesContext:
+    def __init__(self) -> None:
+        self.tools: dict[str, object] = {}
+        self.hooks: dict[str, object] = {}
+
+    def register_tool(self, name: str, *args: object, **kwargs: object) -> None:
+        self.tools[name] = {"args": args, "kwargs": kwargs}
+
+    def register_hook(self, name: str, handler: object) -> None:
+        self.hooks[name] = handler
+
+
+def _write_fake_hermes_code_tree(code_root: Path, *, version: str | None) -> Path:
+    """A Hermes checkout stub whose loader admits omh only when its version resolves.
+
+    Like hermes_cli/version_info.py, the version comes from the install stamp
+    beside the imported package; a copy imported from elsewhere reports "unknown".
+    """
+    package = code_root / "hermes_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "version_info.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "from types import SimpleNamespace\n\n"
+        "def get_version_info():\n"
+        "    stamp = Path(__file__).resolve().parent.parent / 'install-stamp.json'\n"
+        "    try:\n"
+        "        version = json.loads(stamp.read_text(encoding='utf-8'))['version']\n"
+        "    except OSError:\n"
+        "        version = 'unknown'\n"
+        "    return SimpleNamespace(base_version=version)\n",
+        encoding="utf-8",
+    )
+    (package / "plugins.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "from types import SimpleNamespace\n\n"
+        "from hermes_cli.version_info import get_version_info\n\n"
+        f"TOOLS = {sorted(PROVIDED_TOOLS)!r}\n"
+        f"HOOKS = {sorted(PROVIDED_HOOKS)!r}\n\n"
+        "class PluginManager:\n"
+        "    def __init__(self):\n"
+        "        self._plugins = {}\n\n"
+        "    def discover_and_load(self, force=False):\n"
+        "        if not (Path(os.environ['HERMES_HOME']) / 'plugins' / 'omh').is_dir():\n"
+        "            return\n"
+        "        running = get_version_info().base_version\n"
+        "        if running == 'unknown':\n"
+        "            error = 'omh plugin requires Hermes \">=0.21.1\"; running Hermes <unknown>'\n"
+        "            self._plugins['omh'] = SimpleNamespace(\n"
+        "                enabled=False, error=error, tools_registered=[], hooks_registered=[])\n"
+        "        else:\n"
+        "            self._plugins['omh'] = SimpleNamespace(\n"
+        "                enabled=True, error=None, tools_registered=TOOLS, hooks_registered=HOOKS)\n",
+        encoding="utf-8",
+    )
+    if version is not None:
+        (code_root / "install-stamp.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+    return code_root
+
+
+def load_installed_plugin(plugin_dir: Path):
+    module_name = "_test_omh_installed_plugin"
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            sys.modules.pop(name, None)
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        plugin_dir / "__init__.py",
+        submodule_search_locations=[str(plugin_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load installed plugin")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class PluginHermesCompatRangeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.paths = resolve_paths(root / ".omh", root / ".hermes")
+        self.base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+        status, stdout, stderr = run_cli(self.base + ["setup", "--with-plugin", "--no-interactive"])
+        self.assertEqual((status, stderr), (0, ""))
+        self.setup_payload = json.loads(stdout)
+        self.plugin_yaml = self.paths.hermes_plugin_dir / "plugin.yaml"
+
+    def test_declared_range_and_installed_conformance(self) -> None:
+        from omh.plugin_bundle.omh.host_compat import declared_range, parse_range, version_satisfies
+
+        requirement = declared_range(self.plugin_yaml)
+        # A floor only: Hermes skips a plugin whose range excludes the running
+        # host, so an upper bound would delist the plugin on the next minor.
+        self.assertEqual(requirement, ">=0.21.1")
+        self.assertTrue(parse_range(requirement))
+        for version, supported in (("0.21.1", True), ("0.21.5", True), ("0.22.0", True), ("0.30.0", True),
+                                   ("1.0.0", True), ("0.21.0", False), ("0.20.9", False)):
+            with self.subTest(version=version):
+                self.assertEqual(version_satisfies(version, requirement), supported)
+        inspection = inspect_plugin_bundle(self.paths)
+        self.assertTrue(inspection["plugin_distribution_ready"])
+        self.assertEqual(inspection["plugin_manifest_conformance"]["declared_hermes_range"], requirement)
+
+    def test_parser_grammar(self) -> None:
+        from omh.plugin_bundle.omh.host_compat import parse_range, version_satisfies
+
+        for operator, expected in ((">=", True), ("<=", True), (">", False), ("<", False), ("==", True), ("!=", False)):
+            with self.subTest(operator=operator):
+                self.assertEqual(version_satisfies("1.2.3", operator + "1.2.3"), expected)
+        self.assertTrue(version_satisfies("1.10.0", "> 1.2.9, <= 2.0.0"))
+        for invalid in ("", "not-a-range", "^0.21.1", ">=0.21", ">=0.21.1,", ">=0.21.1rc1", "==1.2.3 || ==2.0.0"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_range(invalid)
+        with self.assertRaises(ValueError):
+            version_satisfies("1.2.3rc1", ">=1.2.3")
+
+    def _assert_invalid_declaration(self, replacement: str) -> None:
+        lines = self.plugin_yaml.read_text(encoding="utf-8").splitlines()
+        self.plugin_yaml.write_text("\n".join(
+            replacement if line.startswith("requires_hermes:") else line for line in lines
+        ) + "\n", encoding="utf-8")
+        inspection = inspect_plugin_bundle(self.paths)
+        self.assertFalse(inspection["plugin_manifest_conformance"]["ok"])
+        self.assertIn("requires_hermes", inspection["plugin_manifest_conformance"]["invalid_fields"])
+        self.assertFalse(inspection["plugin_distribution_ready"])
+        status, stdout, stderr = run_cli(self.base + ["doctor"])
+        self.assertEqual((status, stderr), (1, ""))
+        checks = {item["name"]: item for item in json.loads(stdout)["checks"]}
+        self.assertFalse(checks["plugin_manifest_conformance"]["ok"])
+        status, stdout, stderr = run_cli(self.base + ["probe"])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertFalse(json.loads(stdout)["plugin_distribution_ready"])
+
+    def test_conformance_fails_when_range_removed(self) -> None:
+        self._assert_invalid_declaration("")
+
+    def test_conformance_fails_when_range_corrupted(self) -> None:
+        self._assert_invalid_declaration('requires_hermes: "not-a-range"')
+
+    def test_conformance_fails_when_range_empty(self) -> None:
+        self._assert_invalid_declaration('requires_hermes: ""')
+
+    def test_declaration_check_is_not_runtime_evidence(self) -> None:
+        inspection = inspect_plugin_bundle(self.paths)
+        self.assertTrue(inspection["plugin_distribution_ready"])
+        self.assertFalse(inspection["plugin_runtime_observed"])
+        self.assertFalse(self.setup_payload["plugin_distribution"].get("plugin_runtime_observed", False))
+        with mock.patch("omh.maintenance.doctor.observe_real_loader_registration", return_value={
+            "observed": False, "ok": False, "reason": "hermes_not_installed",
+            "registered_tools": [], "registered_hooks": [],
+        }):
+            status, stdout, stderr = run_cli(self.base + ["doctor"])
+        self.assertEqual((status, stderr), (0, ""))
+        checks = {item["name"]: item for item in json.loads(stdout)["checks"]}
+        self.assertFalse(checks["plugin_loader_observed"]["observed"])
+        self.assertEqual(checks["plugin_loader_observed"]["severity"], "warning")
+        status, stdout, stderr = run_cli(self.base + ["probe"])
+        self.assertEqual((status, stderr), (0, ""))
+        payload = json.loads(stdout)
+        self.assertTrue(payload["plugin_distribution_ready"])
+        self.assertFalse(payload["plugin_runtime_observed"])
+        self.assertFalse(payload["native_integration_claim_ready"])
+
+
+class PluginHermesCompatMatrixTests(unittest.TestCase):
+    def test_bundled_matrix_matches_declared_range_and_names_tests(self) -> None:
+        from omh.install.plugin_compat import HERMES_COMPAT_MATRIX, compat_matrix_drift
+
+        self.assertEqual(compat_matrix_drift(), [])
+        for entry in HERMES_COMPAT_MATRIX:
+            suite = unittest.defaultTestLoader.loadTestsFromName(entry["verified_by"])
+            self.assertGreater(suite.countTestCases(), 0)
+            self.assertFalse(unittest.defaultTestLoader.errors)
+            self.assertIn("hermes_cli.__version__", entry["host_contracts"])
+
+    def test_matrix_drift_blocks_release_cli(self) -> None:
+        from omh.install import plugin_compat
+
+        for matrix in ((), ({**plugin_compat.HERMES_COMPAT_MATRIX[0], "version": "0.20.0"},)):
+            with self.subTest(matrix=matrix), TemporaryDirectory() as tmp, mock.patch.object(
+                plugin_compat, "HERMES_COMPAT_MATRIX", matrix,
+            ):
+                findings = plugin_compat.compat_matrix_drift()
+                self.assertTrue(findings)
+                self.assertTrue(all('">=0.21.1"' in finding for finding in findings))
+                if matrix:
+                    self.assertIn("0.20.0", " ".join(findings))
+                root = Path(tmp)
+                status, stdout, stderr = run_cli([
+                    "--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes"),
+                    "release", "product-readiness", "--json",
+                ])
+                self.assertEqual((status, stderr), (1, ""))
+                payload = json.loads(stdout)
+                self.assertEqual(payload["status"], "needs_attention")
+                gate = next(item for item in payload["gates"] if item["id"] == "plugin_compat_matrix")
+                self.assertEqual(gate["status"], "failed")
+                self.assertTrue(gate["blocking"])
+
+    def test_declaration_without_covering_entry_and_invalid_range_fail(self) -> None:
+        from omh.install import plugin_compat
+
+        for requirement in (">=0.22.0,<0.23.0", "not-a-range", ""):
+            with self.subTest(requirement=requirement), mock.patch.object(
+                plugin_compat, "declared_range", return_value=requirement,
+            ):
+                self.assertTrue(plugin_compat.compat_matrix_drift())
+        with mock.patch.object(plugin_compat, "declared_range", side_effect=ValueError("missing")):
+            self.assertTrue(plugin_compat.compat_matrix_drift())
+
+    def test_every_out_of_range_entry_is_reported(self) -> None:
+        from omh.install import plugin_compat
+
+        matrix = tuple({**plugin_compat.HERMES_COMPAT_MATRIX[0], "version": version}
+                       for version in ("0.20.0", "0.21.1", "0.21.0"))
+        with mock.patch.object(plugin_compat, "HERMES_COMPAT_MATRIX", matrix):
+            findings = plugin_compat.compat_matrix_drift()
+        self.assertEqual(len(findings), 2)
+        self.assertIn("0.20.0", findings[0])
+        self.assertIn("0.21.0", findings[1])
+
+
+class PluginHermesAdmissionTests(unittest.TestCase):
+    bundle = Path(__file__).resolve().parents[1] / "src" / "plugin_bundle" / "omh"
+
+    def tearDown(self) -> None:
+        for name in list(sys.modules):
+            if name == "_test_omh_installed_plugin" or name.startswith("_test_omh_installed_plugin."):
+                sys.modules.pop(name, None)
+
+    def test_in_process_admission_rejects_before_register(self) -> None:
+        for version in ("0.21.0", "0.20.9", "0.0.0", None, "invalid"):
+            host = ModuleType("hermes_cli")
+            if version is not None:
+                host.__version__ = version
+            with self.subTest(version=version), patch_modules({"hermes_cli": host}):
+                plugin = load_installed_plugin(self.bundle)
+                context = FakeHermesContext()
+                with self.assertRaises(RuntimeError):
+                    plugin.register(context)
+                self.assertEqual(context.tools, {})
+                self.assertEqual(context.hooks, {})
+
+    def test_in_process_admission_accepts_and_validates_registration(self) -> None:
+        from omh.install.plugin_pack import _register_smoke
+        from omh.plugin_bundle.omh.host_compat import admission_error
+
+        for version in ("0.21.1", "0.22.0", "0.30.0"):
+            with self.subTest(version=version):
+                self.assertIsNone(admission_error(version, self.bundle / "plugin.yaml"))
+        host = ModuleType("hermes_cli")
+        host.__version__ = "0.21.1"
+        with patch_modules({"hermes_cli": host}):
+            plugin = load_installed_plugin(self.bundle)
+            context = FakeHermesContext()
+            plugin.register(context)
+            self.assertEqual(sorted(context.tools), sorted(PROVIDED_TOOLS))
+            smoke = _register_smoke(self.bundle)
+        self.assertTrue(smoke["register_smoke"])
+        self.assertEqual(smoke["tool_schema_failures"], [])
+
+    def test_admission_fails_closed_on_invalid_declaration(self) -> None:
+        host = ModuleType("hermes_cli")
+        host.__version__ = "0.21.1"
+        with TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "omh"
+            shutil.copytree(self.bundle, bundle)
+            for declaration in ("", 'requires_hermes: "not-a-range"\n'):
+                (bundle / "plugin.yaml").write_text(declaration, encoding="utf-8")
+                with self.subTest(declaration=declaration), patch_modules({"hermes_cli": host}):
+                    plugin = load_installed_plugin(bundle)
+                    context = FakeHermesContext()
+                    with self.assertRaises(RuntimeError):
+                        plugin.register(context)
+                    self.assertEqual(context.tools, {})
+                    self.assertEqual(context.hooks, {})
+
+    def test_rejection_message_is_bounded_and_metadata_only(self) -> None:
+        from omh.plugin_bundle.omh.host_compat import admission_error
+
+        canaries = ("sk-fixture-secret", "private prompt fixture", "/outside/plugin/private")
+        host = ModuleType("hermes_cli")
+        host.__version__ = "0.21.0"
+        with mock.patch.dict(os.environ, dict(zip(("API_KEY", "PROMPT", "PRIVATE_PATH"), canaries))), \
+                patch_modules({"hermes_cli": host}):
+            plugin = load_installed_plugin(self.bundle)
+            with self.assertRaises(RuntimeError) as raised:
+                plugin.register(FakeHermesContext())
+        error = str(raised.exception)
+        self.assertRegex(error, r'^omh plugin requires Hermes "[^"\n]+"; running Hermes \d+\.\d+\.\d+$')
+        self.assertIn('">=0.21.1"', error)
+        self.assertIn("running Hermes 0.21.0", error)
+        self.assertLessEqual(len(error), 300)
+        for canary in canaries:
+            self.assertNotIn(canary, error)
+        with TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "plugin.yaml"
+            manifest.write_text('requires_hermes: "' + canaries[0] + '"\n', encoding="utf-8")
+            error = admission_error(canaries[1], manifest)
+            self.assertIsNotNone(error)
+            self.assertLessEqual(len(error), 300)
+            for canary in canaries:
+                self.assertNotIn(canary, error)
+
+    @requires_hermes_host
+    def test_real_admission_rejects_unsupported_version_before_register(self) -> None:
+        from omh.install.plugin_loader_observation import _find_hermes_python
+
+        running = subprocess.run(
+            [str(_find_hermes_python()), "-c", "from hermes_cli import __version__; print(__version__)"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()
+        with TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "omh"
+            shutil.copytree(self.bundle, bundle)
+            manifest = bundle / "plugin.yaml"
+            manifest.write_text("\n".join(
+                'requires_hermes: ">=999.0.0"' if line.startswith("requires_hermes:") else line
+                for line in manifest.read_text(encoding="utf-8").splitlines()
+            ) + "\n", encoding="utf-8")
+            # Mark the first registration side effect, after entry-point admission.
+            init = bundle / "__init__.py"
+            source = init.read_text(encoding="utf-8")
+            boundary = "    runtime_paths.note_host_registration(ctx)\n"
+            self.assertEqual(source.count(boundary), 1)
+            init.write_text(source.replace(
+                boundary, '    raise AssertionError("REGISTER_REACHED")\n',
+            ), encoding="utf-8")
+            observation = observe_real_loader_registration(bundle)
+        self.assertTrue(observation["observed"], observation)
+        self.assertFalse(observation["ok"])
+        self.assertFalse(observation["enabled"])
+        self.assertEqual(observation["registered_tools"], [])
+        self.assertEqual(observation["registered_hooks"], [])
+        self.assertIn(">=999.0.0", observation["error"])
+        self.assertIn(running, observation["error"])
+        self.assertNotIn("REGISTER_REACHED", observation["error"])
+
+    @requires_hermes_host
+    def test_real_admission_accepts_declared_range(self) -> None:
+        observation = observe_real_loader_registration(self.bundle)
+        self.assertTrue(observation["observed"], observation)
+        self.assertTrue(observation["ok"], observation)
+        self.assertTrue(observation["enabled"])
+        self.assertEqual(observation["registered_tools"], sorted(PROVIDED_TOOLS))
+        self.assertEqual(observation["registered_hooks"], sorted(PROVIDED_HOOKS))
+
+
+class PluginDistributionTests(unittest.TestCase):
+    def test_manifest_records_spell_nested_paths_with_a_forward_slash_on_every_platform(self) -> None:
+        # The record is compared as a string against the packaged tree and
+        # read back through `plugin_dir / path`; a WindowsPath would spell the
+        # nested Desktop-half files with a backslash and fail both.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "desktop").mkdir()
+            (root / "desktop" / "plugin.js").write_text("export default {}\n", encoding="utf-8")
+            (root / "plugin.yaml").write_text("name: omh\n", encoding="utf-8")
+            records = []
+            _collect_resource_records(root, PureWindowsPath(), records)
+            self.assertEqual(sorted(record.path for record in records), ["desktop/plugin.js", "plugin.yaml"])
+
+    def test_plugin_manifest_conformance_catches_missing_kind(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(
+                run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "setup",
+                        "--with-plugin",
+                    ]
+                )[0],
+                0,
+            )
+            plugin_yaml = hermes_home / "plugins" / "omh" / "plugin.yaml"
+            plugin_yaml.write_text(
+                "\n".join(
+                    line
+                    for line in plugin_yaml.read_text(encoding="utf-8").splitlines()
+                    if not line.startswith("kind:")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            inspection = inspect_plugin_bundle(resolve_paths(omh_home, hermes_home))
+
+            conformance = inspection["plugin_manifest_conformance"]
+            self.assertFalse(conformance["ok"])
+            self.assertEqual(conformance["kind"], "")
+            self.assertIn("kind", conformance["invalid_fields"])
+            status, stdout, stderr = run_cli(
+                [
+                    "--omh-home",
+                    str(omh_home),
+                    "--hermes-home",
+                    str(hermes_home),
+                    "doctor",
+                ]
+            )
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 1)
+            check = next(
+                item
+                for item in json.loads(stdout)["checks"]
+                if item["name"] == "plugin_manifest_conformance"
+            )
+            self.assertFalse(check["ok"])
+
+    def test_plugin_manifest_conformance_matches_registered_surface(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(
+                run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "setup",
+                        "--with-plugin",
+                    ]
+                )[0],
+                0,
+            )
+
+            inspection = inspect_plugin_bundle(resolve_paths(omh_home, hermes_home))
+
+            conformance = inspection["plugin_manifest_conformance"]
+            self.assertTrue(conformance["ok"])
+            self.assertEqual(conformance["kind"], "standalone")
+            self.assertEqual(conformance["declared_tools"], list(PROVIDED_TOOLS))
+            self.assertEqual(conformance["declared_hooks"], list(PROVIDED_HOOKS))
+            self.assertEqual(conformance["invalid_fields"], [])
+
+    def test_real_loader_observation_names_absent_hermes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugins" / "omh"
+            plugin_dir.mkdir(parents=True)
+
+            observation = observe_real_loader_registration(
+                plugin_dir,
+                python_executable=Path(tmp) / "missing-python",
+            )
+
+            self.assertFalse(observation["observed"])
+            self.assertEqual(observation["reason"], "hermes_not_installed")
+
+    def test_real_loader_observation_uses_isolated_home(self) -> None:
+        with TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "source" / "omh"
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "plugin.yaml").write_text("name: omh\nkind: standalone\n", encoding="utf-8")
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+            seen: dict[str, object] = {}
+
+            def runner(command, timeout_seconds, env):
+                seen["command"] = list(command)
+                seen["timeout_seconds"] = timeout_seconds
+                seen["env"] = dict(env or {})
+                isolated_home = Path(str((env or {})["HERMES_HOME"]))
+                self.assertNotEqual(isolated_home, plugin_dir.parent.parent)
+                self.assertTrue((isolated_home / "plugins" / "omh" / "plugin.yaml").is_file())
+                return CommandResult(
+                    command=command,
+                    returncode=0,
+                    stdout=(
+                        'OMH_PLUGIN_LOADER_OBSERVATION={"enabled":true,"error":null,'
+                        f'"tools":{json.dumps(list(PROVIDED_TOOLS))},'
+                        f'"hooks":{json.dumps(list(PROVIDED_HOOKS))}'
+                        "}\n"
+                    ),
+                )
+
+            observation = observe_real_loader_registration(
+                plugin_dir,
+                python_executable=Path(sys.executable),
+                runner=runner,
+            )
+
+            self.assertTrue(observation["observed"])
+            self.assertTrue(observation["ok"])
+            self.assertEqual(observation["registered_tools"], list(PROVIDED_TOOLS))
+            self.assertEqual(observation["registered_hooks"], list(PROVIDED_HOOKS))
+            self.assertEqual(seen["timeout_seconds"], 120)
+
+    def test_real_loader_observation_reports_absent_code_tree_as_not_observed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "omh"
+            plugin_dir.mkdir()
+
+            def runner(command, timeout_seconds, env):
+                raise AssertionError("probe must not run without a Hermes code tree")
+
+            observation = observe_real_loader_registration(
+                plugin_dir,
+                python_executable=Path(sys.executable),
+                hermes_code_root=Path(tmp) / "hermes-agent",
+                runner=runner,
+            )
+
+            self.assertFalse(observation["observed"])
+            self.assertEqual(observation["reason"], "hermes_code_tree_absent")
+
+    def test_real_loader_observation_puts_code_tree_on_path_with_disposable_home(self) -> None:
+        with TemporaryDirectory() as tmp:
+            hermes_home = Path(tmp) / ".hermes"
+            plugin_dir = hermes_home / "plugins" / "omh"
+            plugin_dir.mkdir(parents=True)
+            code_root = _write_fake_hermes_code_tree(hermes_home / "hermes-agent", version="0.21.5")
+            seen: dict[str, str] = {}
+
+            def runner(command, timeout_seconds, env):
+                seen.update(env or {})
+                return CommandResult(command=command, returncode=0, stdout="")
+
+            observe_real_loader_registration(
+                plugin_dir,
+                python_executable=Path(sys.executable),
+                hermes_code_root=code_root,
+                runner=runner,
+            )
+
+            self.assertEqual(seen["PYTHONPATH"], str(code_root))
+            self.assertNotEqual(Path(seen["HERMES_HOME"]), hermes_home)
+            self.assertFalse(Path(seen["HERMES_HOME"]).exists())
+
+    def test_hermes_code_root_falls_back_to_root_tree_for_a_profile_home(self) -> None:
+        with TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HERMES_PYTHON": ""}):
+            root = Path(tmp) / ".hermes"
+            profile = root / "profiles" / "miku"
+            profile.mkdir(parents=True)
+            root_tree = _write_fake_hermes_code_tree(root / "hermes-agent", version="0.21.5")
+
+            self.assertEqual(resolve_hermes_code_root(profile), root_tree)
+            self.assertEqual(resolve_hermes_code_root(root), root_tree)
+            own_tree = _write_fake_hermes_code_tree(profile / "hermes-agent", version="0.21.5")
+            self.assertEqual(resolve_hermes_code_root(profile), own_tree)
+
+    def test_hermes_code_root_follows_the_hermes_python_override_tree(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".hermes"
+            root.mkdir()
+            home_tree = _write_fake_hermes_code_tree(root / "hermes-agent", version="0.21.5")
+            other_tree = _write_fake_hermes_code_tree(Path(tmp) / "other-hermes", version="0.21.6")
+            bare_tree = Path(tmp) / "bare-python"
+
+            with mock.patch.dict(os.environ, {"HERMES_PYTHON": str(other_tree / "venv" / "bin" / "python")}):
+                self.assertEqual(resolve_hermes_code_root(root), other_tree)
+            # An override whose tree holds no Hermes checkout leaves the home to decide.
+            with mock.patch.dict(os.environ, {"HERMES_PYTHON": str(bare_tree / "venv" / "bin" / "python")}):
+                self.assertEqual(resolve_hermes_code_root(root), home_tree)
+
+    # The probe's exact env carries no SYSTEMROOT, which Windows' interpreter needs.
+    @requires_posix
+    def test_real_loader_observation_reports_unresolved_version_as_not_observed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "plugins" / "omh"
+            plugin_dir.mkdir(parents=True)
+            code_root = _write_fake_hermes_code_tree(Path(tmp) / "hermes-agent", version=None)
+
+            observation = observe_real_loader_registration(
+                plugin_dir,
+                python_executable=Path(sys.executable),
+                hermes_code_root=code_root,
+            )
+
+            self.assertFalse(observation["observed"], observation)
+            self.assertEqual(observation["reason"], "hermes_version_unresolved")
+
+    # POSIX-only for the same SYSTEMROOT reason, and for the venv's bin/ layout.
+    @requires_posix
+    def test_real_loader_observation_agrees_with_host_loader_verdict(self) -> None:
+        # The interpreter carries an installed hermes_cli with no checkout beside it,
+        # as a PM-managed venv does; only the code tree resolves the version (#2050).
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hermes_home = root / ".hermes"
+            plugin_dir = hermes_home / "plugins" / "omh"
+            plugin_dir.mkdir(parents=True)
+            code_root = _write_fake_hermes_code_tree(hermes_home / "hermes-agent", version="0.21.5")
+            subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root / "venv")], check=True, timeout=120)
+            venv_python = root / "venv" / "bin" / "python"
+            site_packages = subprocess.run(
+                [str(venv_python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                capture_output=True, text=True, check=True, timeout=30,
+            ).stdout.strip()
+            shutil.copytree(code_root / "hermes_cli", Path(site_packages) / "hermes_cli")
+            host = subprocess.run(
+                [
+                    str(venv_python),
+                    "-c",
+                    "from hermes_cli.plugins import PluginManager\n"
+                    "m = PluginManager(); m.discover_and_load(force=True)\n"
+                    "print(m._plugins['omh'].enabled)",
+                ],
+                capture_output=True, text=True, check=True, timeout=30,
+                env={"HERMES_HOME": str(hermes_home), "PYTHONPATH": str(code_root), "PATH": os.environ.get("PATH", "")},
+            )
+            host_loaded = host.stdout.strip() == "True"
+
+            observation = observe_real_loader_registration(
+                plugin_dir,
+                python_executable=venv_python,
+                hermes_code_root=code_root,
+            )
+
+            self.assertTrue(host_loaded, host.stdout)
+            self.assertTrue(observation["observed"], observation)
+            self.assertEqual(observation["ok"], host_loaded, observation)
+
+    def test_real_loader_observation_detects_zero_registered_tools(self) -> None:
+        with TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "omh"
+            plugin_dir.mkdir()
+            (plugin_dir / "plugin.yaml").write_text("name: omh\n", encoding="utf-8")
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+
+            def runner(command, timeout_seconds, env):
+                return CommandResult(
+                    command=command,
+                    returncode=0,
+                    stdout=(
+                        "OMH_PLUGIN_LOADER_OBSERVATION="
+                        '{"enabled":false,"error":"exclusive plugin","tools":[],"hooks":[]}\n'
+                    ),
+                )
+
+            observation = observe_real_loader_registration(
+                plugin_dir,
+                python_executable=Path(sys.executable),
+                runner=runner,
+            )
+
+            self.assertTrue(observation["observed"])
+            self.assertFalse(observation["ok"])
+            self.assertEqual(observation["registered_tools"], [])
+            self.assertEqual(observation["registered_hooks"], [])
+            self.assertEqual(observation["error"], "exclusive plugin")
+
+    def test_doctor_names_fake_context_and_unobserved_real_loader(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(
+                run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "setup",
+                        "--with-plugin",
+                    ]
+                )[0],
+                0,
+            )
+
+            with mock.patch.dict(os.environ, {"HERMES_PYTHON": ""}), mock.patch(
+                "omh.maintenance.doctor.observe_real_loader_registration",
+                return_value={
+                    "observed": False,
+                    "ok": False,
+                    "reason": "hermes_not_installed",
+                    "registered_tools": [],
+                    "registered_hooks": [],
+                },
+            ) as observe:
+                status, stdout, stderr = run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "doctor",
+                    ]
+                )
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            self.assertEqual(observe.call_args.kwargs["hermes_code_root"], hermes_home.resolve() / "hermes-agent")
+            checks = {item["name"]: item for item in json.loads(stdout)["checks"]}
+            self.assertTrue(checks["plugin_register_smoke"]["ok"])
+            loader = checks["plugin_loader_observed"]
+            self.assertTrue(loader["ok"])
+            self.assertFalse(loader["observed"])
+            self.assertEqual(loader["severity"], "warning")
+
+    def test_doctor_human_summary_distinguishes_loader_observation(self) -> None:
+        checks = [
+            {"name": "plugin_register_smoke", "ok": True},
+            {
+                "name": "plugin_loader_observed",
+                "ok": True,
+                "observed": True,
+                "severity": "ok",
+            },
+        ]
+        with mock.patch.object(
+            _setup_module,
+            "tr",
+            side_effect=lambda language, key: key,
+        ):
+            lines = _setup_module._doctor_observation_boundary_lines(checks, language="en")
+
+        self.assertEqual(
+            lines,
+            [
+                "doctor_plugin_bridge_ready",
+                "doctor_plugin_loader_observed",
+            ],
+        )
+
+    def test_doctor_fails_when_real_loader_registers_zero_tools(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(
+                run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "setup",
+                        "--with-plugin",
+                    ]
+                )[0],
+                0,
+            )
+
+            with mock.patch(
+                "omh.maintenance.doctor.observe_real_loader_registration",
+                return_value={
+                    "observed": True,
+                    "ok": False,
+                    "reason": "registration_mismatch",
+                    "error": "exclusive plugin",
+                    "registered_tools": [],
+                    "registered_hooks": [],
+                },
+            ):
+                status, stdout, stderr = run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "doctor",
+                    ]
+                )
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 1)
+            checks = {item["name"]: item for item in json.loads(stdout)["checks"]}
+            loader = checks["plugin_loader_observed"]
+            self.assertFalse(loader["ok"])
+            self.assertTrue(loader["observed"])
+            self.assertEqual(loader["severity"], "blocking")
+
+    def test_bundled_plugin_resource_is_packaged(self) -> None:
+        root = resources.files("omh.plugin_bundle.omh")
+        self.assertTrue(root.joinpath("plugin.yaml").is_file())
+        self.assertTrue(root.joinpath("config.yaml").is_file())
+        self.assertTrue(root.joinpath("references", "role-planner.md").is_file())
+        pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        packages = pyproject["tool"]["setuptools"]["packages"]
+        package_dir = pyproject["tool"]["setuptools"]["package-dir"]
+        self.assertIn("omh.plugin_bundle.omh", packages)
+        self.assertEqual(package_dir["omh.plugin_bundle"], "src/plugin_bundle")
+        self.assertTrue((Path("src") / "plugin_bundle" / "omh" / "__init__.py").is_file())
+        self.assertTrue((Path("src") / "plugin_bundle" / "omh" / "references" / "__init__.py").is_file())
+        self.assertIn("omh.plugin_bundle.omh", pyproject["tool"]["setuptools"]["package-data"])
+        self.assertIn(
+            "*.md",
+            pyproject["tool"]["setuptools"]["package-data"]["omh.plugin_bundle.omh.references"],
+        )
+        self.assertTrue(root.joinpath("tools", "capability_families.json").is_file())
+        self.assertIn(
+            "capability_families.json",
+            pyproject["tool"]["setuptools"]["package-data"]["omh.plugin_bundle.omh.tools"],
+        )
+        self.assertTrue(root.joinpath("tools", "skill_shortlist.json").is_file())
+        self.assertIn(
+            "skill_shortlist.json",
+            pyproject["tool"]["setuptools"]["package-data"]["omh.plugin_bundle.omh.tools"],
+        )
+        # The Hermes Desktop half. `dashboard` is a declared package so
+        # `plugin_api.py` ships as a module the standalone gate imports;
+        # `desktop/` is not one -- Hermes Desktop copies that whole folder
+        # into its app-owned `desktop-plugins/omh/`, so it carries no Python
+        # package marker and the renderer file ships as the parent's data.
+        self.assertIn("omh.plugin_bundle.omh.dashboard", packages)
+        self.assertNotIn("omh.plugin_bundle.omh.desktop", packages)
+        self.assertTrue((Path("src") / "plugin_bundle" / "omh" / "dashboard" / "__init__.py").is_file())
+        desktop_files = sorted(path.name for path in (Path("src") / "plugin_bundle" / "omh" / "desktop").iterdir() if path.is_file())
+        self.assertEqual(desktop_files, ["plugin.js"])
+        self.assertTrue(root.joinpath("desktop", "plugin.js").is_file())
+        self.assertTrue(root.joinpath("dashboard", "manifest.json").is_file())
+        self.assertTrue(root.joinpath("dashboard", "plugin_api.py").is_file())
+        self.assertIn("desktop/*.js", pyproject["tool"]["setuptools"]["package-data"]["omh.plugin_bundle.omh"])
+        self.assertNotIn("omh.plugin_bundle.omh.desktop", pyproject["tool"]["setuptools"]["package-data"])
+        self.assertIn(
+            "manifest.json",
+            pyproject["tool"]["setuptools"]["package-data"]["omh.plugin_bundle.omh.dashboard"],
+        )
+
+    def test_plugin_yaml_advertises_metadata_tools_and_hooks(self) -> None:
+        root = resources.files("omh.plugin_bundle.omh")
+        text = root.joinpath("plugin.yaml").read_text(encoding="utf-8")
+
+        for tool in PROVIDED_TOOLS:
+            self.assertIn(f"  - {tool}", text)
+            self.assertTrue(
+                root.joinpath("tools", f"{TOOL_FILE_STEMS[tool]}.py").is_file(),
+                f"{tool} must have a bundled tool file declared by metadata.py",
+            )
+        for hook in PROVIDED_HOOKS:
+            self.assertIn(f"  - {hook}", text)
+
+    def test_source_layout_plugin_awareness_uses_package_loopability_helpers(self) -> None:
+        script = r"""
+import json
+from omh.plugin_bundle.omh.awareness import awareness_route_hint
+
+cases = [
+    ("run a loop to improve first-run experience", "choose_permission_profile", "choosing the loop permission profile"),
+    ("Make this a 100k-star OSS", "reframe_north_star", "reframing the north-star goal"),
+    ("./loop change the button color", "route_direct_task", "routing the direct task"),
+]
+observed = []
+for message, expected_action, expected_label in cases:
+    payload = awareness_route_hint(message)
+    observed.append(
+        {
+            "message": message,
+            "workflow": payload.get("primary_workflow"),
+            "action": payload.get("primary_next_action"),
+            "label": payload.get("primary_next_action_label"),
+        }
+    )
+    assert payload.get("primary_workflow") == "ulw-loop", observed[-1]
+    assert payload.get("primary_next_action") == expected_action, observed[-1]
+    assert payload.get("primary_next_action_label") == expected_label, observed[-1]
+print(json.dumps(observed, ensure_ascii=False))
+"""
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path.cwd() / "src")
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path.cwd(),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        observed = json.loads(result.stdout)
+        self.assertEqual(
+            [item["action"] for item in observed],
+            ["choose_permission_profile", "reframe_north_star", "route_direct_task"],
+        )
+
+    def test_probe_tool_falls_back_when_its_import_fails_but_not_when_it_runs(self) -> None:
+        from omh.plugin_bundle.omh.tools import probe_tool
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            args = {"omh_home": str(omh_home), "hermes_home": str(hermes_home)}
+            package_missing = ModuleNotFoundError("No module named 'omh'", name="omh")
+            backend_broken = ModuleNotFoundError("No module named 'omh.probe'", name="omh.probe")
+
+            # Absent, or present but skewed: the import fails either way, and
+            # the fallback answers while its package_backend row says why
+            # (#2166). Only the import is guarded.
+            for failure in (package_missing, backend_broken, RuntimeError("probe import boom")):
+                with self.subTest(failure=type(failure).__name__):
+                    with mock.patch.object(probe_tool, "_import_package_probe", side_effect=failure):
+                        fallback_payload = json.loads(probe_tool.omh_probe_handler(args))
+                    self.assertEqual(fallback_payload["source"], "standalone_plugin_bundle_fallback")
+                    self.assertTrue(fallback_payload["degraded"])
+                    self.assertIn(
+                        "package_backend", [row["name"] for row in fallback_payload["capabilities"]]
+                    )
+
+            # A failure while the imported probe runs is that probe's own
+            # fault, and the fallback must not hide it.
+            with mock.patch.object(probe_tool, "_package_probe", side_effect=backend_broken):
+                with self.assertRaises(ModuleNotFoundError):
+                    probe_tool.omh_probe_handler(args)
+
+    def test_context_tool_distinguishes_missing_package_from_package_call_failure(self) -> None:
+        from omh.plugin_bundle.omh.tools import context_tool
+
+        args = {"message": "plan a risky refactor with secret-token-123", "limit": 2}
+
+        # Case (a): the package genuinely cannot be imported. This is the true
+        # standalone fallback and must keep working.
+        with patch_modules({"omh.context": None}):
+            fallback_payload = json.loads(context_tool.omh_context_handler(dict(args)))
+        self.assertEqual(fallback_payload["source_backend"], "standalone_plugin_bundle_fallback")
+        self.assertEqual(fallback_payload["schema_version"], "omh_context_brief/v1")
+        self.assertFalse(fallback_payload["message"]["raw_prompt_echoed"])
+
+        # Case (b): the package imports fine but the delegated call raises. This must
+        # not be mislabeled as the same normal standalone fallback.
+        with mock.patch("omh.context.build_context_brief", side_effect=RuntimeError("package-context-boom")):
+            error_payload = json.loads(context_tool.omh_context_handler(dict(args)))
+        self.assertEqual(error_payload["source_backend"], "package_context_error")
+        self.assertNotEqual(error_payload["source_backend"], "standalone_plugin_bundle_fallback")
+        self.assertEqual(error_payload["status"], "error")
+        self.assertEqual(error_payload["error"], "package_backend_error")
+        self.assertEqual(error_payload["error_type"], "RuntimeError")
+        self.assertTrue(error_payload["degraded"])
+        self.assertFalse(error_payload["message"]["raw_prompt_echoed"])
+        serialized = json.dumps(error_payload, sort_keys=True)
+        self.assertNotIn("package-context-boom", serialized)
+        self.assertNotIn("secret-token-123", serialized)
+
+    def test_memory_tool_needs_no_package_and_still_answers(self) -> None:
+        from omh.plugin_bundle.omh.tools import memory_tool
+
+        # The Hermes process cannot import the `omh` package, so a tool that
+        # delegated there answered "package_absent" on the only host it exists
+        # for. Blocking the package must now change nothing: the reader is in
+        # the bundle, which is what makes the tool work at all.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memories = root / ".hermes" / "memories"
+            memories.mkdir(parents=True)
+            (memories / "MEMORY.md").write_text("a remembered fact", encoding="utf-8")
+            env = {"OMH_HOME": str(root / ".omh"), "HERMES_HOME": str(root / ".hermes")}
+
+            with patch_modules({"omh.memory": None, "omh.paths": None}):
+                with mock.patch.dict(os.environ, env):
+                    payload = json.loads(memory_tool.omh_memory_handler({}))
+
+        self.assertEqual(payload["source_backend"], "bundle_memory")
+        self.assertEqual(payload["schema_version"], "hermes_memory_bridge/v1")
+        self.assertNotIn("status", payload)  # not the unavailable shape
+        self.assertEqual([f["label"] for f in payload["files"]], ["MEMORY.md", "USER.md"])
+        self.assertEqual(payload["files"][0]["chars"], len("a remembered fact"))
+
+    def test_memory_tool_keeps_a_read_failure_apart_from_an_empty_comparison(self) -> None:
+        from omh.plugin_bundle.omh.tools import memory_tool
+
+        with mock.patch.object(
+            memory_tool, "build_hermes_memory_bridge", side_effect=RuntimeError("bundle-memory-boom")
+        ):
+            error_payload = json.loads(memory_tool.omh_memory_handler({}))
+        # Returning an empty comparison here would read as "Hermes remembers
+        # nothing" when OMH simply could not read the file.
+        self.assertEqual(error_payload["source_backend"], "bundle_memory_error")
+        self.assertEqual(error_payload["status"], "unavailable")
+        self.assertEqual(error_payload["reason"], "RuntimeError")
+        self.assertNotIn("bundle-memory-boom", json.dumps(error_payload, sort_keys=True))
+        for absent in ("files", "already_in_hermes", "promotable", "approved_records"):
+            self.assertNotIn(absent, error_payload)
+
+    def test_recommend_tool_distinguishes_missing_package_from_package_call_failure(self) -> None:
+        from omh.plugin_bundle.omh.tools import recommend_tool
+
+        args = {"message": "plan a risky refactor with secret-token-123", "limit": 2}
+
+        # Case (a): the package genuinely cannot be imported. This is the true
+        # standalone fallback and must keep working.
+        with patch_modules({"omh.routing.recommend": None}):
+            fallback_payload = json.loads(recommend_tool.omh_recommend_handler(dict(args)))
+        self.assertEqual(fallback_payload["source"], "standalone_plugin_bundle_fallback")
+        self.assertIn(fallback_payload["status"], {"recommended", "no_match"})
+        self.assertNotIn("error", fallback_payload)
+
+        # Case (b): the package imports fine but the delegated call raises. This must
+        # not be mislabeled as the same normal standalone fallback.
+        with mock.patch("omh.routing.recommend.recommend_skills", side_effect=RuntimeError("package-recommend-boom")):
+            error_payload = json.loads(recommend_tool.omh_recommend_handler(dict(args)))
+        self.assertEqual(error_payload["source"], "package_recommend_error")
+        self.assertNotEqual(error_payload["source"], "standalone_plugin_bundle_fallback")
+        self.assertEqual(error_payload["status"], "error")
+        self.assertEqual(error_payload["error"], "package_backend_error")
+        self.assertEqual(error_payload["error_type"], "RuntimeError")
+        self.assertTrue(error_payload["degraded"])
+        self.assertEqual(error_payload["recommendations"], [])
+        serialized = json.dumps(error_payload, sort_keys=True)
+        self.assertNotIn("package-recommend-boom", serialized)
+        self.assertNotIn("secret-token-123", serialized)
+
+    def test_pre_llm_call_distinguishes_an_idle_host_from_a_failed_status_read(self) -> None:
+        # This is the bundle surface that ships to third-party hosts, so the
+        # degraded path is exercised here as an installed host would hit it.
+        from omh.plugin_bundle.omh import awareness as awareness_module
+        from omh.plugin_bundle.omh.hooks import llm_hooks
+
+        awareness_module._awareness_context_matches_message_cached.cache_clear()
+        awareness_module._awareness_route_hint_cached.cache_clear()
+
+        message = "tell me a short joke about secret-token-123"
+
+        # Case (a): a genuinely idle host with an empty runtime home. Nothing
+        # to report, so the hook keeps returning None exactly as today.
+        with TemporaryDirectory() as tmp:
+            idle_payload = llm_hooks.pre_llm_call(
+                omh_home=tmp, hermes_home=tmp, user_message=message, is_first_turn=False
+            )
+        self.assertIsNone(idle_payload)
+
+        # Case (b): the status read raises. This must not be mislabeled as the
+        # same idle host.
+        awareness_module._awareness_context_matches_message_cached.cache_clear()
+        awareness_module._awareness_route_hint_cached.cache_clear()
+        with TemporaryDirectory() as tmp:
+            with mock.patch.object(llm_hooks, "read_omh_activity", side_effect=RuntimeError("status-boom")):
+                error_payload = llm_hooks.pre_llm_call(
+                    omh_home=tmp, hermes_home=tmp, user_message=message, is_first_turn=False
+                )
+
+        self.assertIsNotNone(error_payload)
+        assert error_payload is not None
+        degradation = error_payload["omh_degradation"]
+        self.assertEqual(degradation["schema_version"], "omh_degradation/v1")
+        self.assertTrue(degradation["degraded"])
+        self.assertEqual([row["component"] for row in degradation["components"]], ["runtime_status_read"])
+        self.assertEqual(degradation["components"][0]["error_type"], "RuntimeError")
+        self.assertFalse(degradation["privacy"]["error_message_stored"])
+        self.assertIn("[OMH Degraded]", error_payload["context"])
+        # PM-1: no status panel is implied, because the status fields are still absent.
+        self.assertNotIn("runs", error_payload)
+        self.assertNotIn("[OMH] Native bridge status context.", error_payload["context"])
+        serialized = json.dumps(error_payload, sort_keys=True)
+        self.assertNotIn("status-boom", serialized)
+        self.assertNotIn("secret-token-123", serialized)
+
+    def test_setup_default_installs_plugin(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+
+            status, stdout, stderr = run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup"])
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            payload = json.loads(stdout)
+            self.assertIn("plugin", payload["steps"])
+            self.assertEqual(payload["operator_summary"]["plugin_mode"], "installed")
+            self.assertTrue((hermes_home / "plugins" / "omh").exists())
+            self.assertEqual(run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "doctor"])[0], 0)
+
+    def test_setup_with_plugin_installs_and_registers_smoke(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+
+            status, stdout, stderr = run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin"])
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            payload = json.loads(stdout)
+            plugin = payload["plugin_distribution"]
+            plugin_dir = hermes_home / "plugins" / "omh"
+            self.assertEqual(plugin["schema_version"], "plugin_distribution/v1")
+            self.assertTrue(plugin["observed"])
+            self.assertTrue(plugin["requires_hermes_plugin_enable"])
+            self.assertTrue((plugin_dir / "plugin.yaml").exists())
+            self.assertTrue((plugin_dir / ".omh-plugin-manifest.json").exists())
+            # The Hermes Desktop half is copied with the bundle and hashed
+            # into the manifest, which is what lets `omh update` refresh it.
+            desktop_half = ("desktop/plugin.js", "dashboard/manifest.json", "dashboard/plugin_api.py")
+            for relative in desktop_half:
+                self.assertTrue((plugin_dir / relative).is_file(), relative)
+            manifest_paths = {
+                record["path"]
+                for record in json.loads((plugin_dir / ".omh-plugin-manifest.json").read_text(encoding="utf-8"))["files"]
+            }
+            self.assertTrue(set(desktop_half).issubset(manifest_paths), sorted(manifest_paths))
+            self.assertEqual(
+                plugin["registered_tools"],
+                [
+                    "omh_agent_board",
+                    "omh_capabilities",
+                    "omh_context",
+                    "omh_dag",
+                    "omh_decision_gate",
+                    "omh_delegate_route",
+                    "omh_document_plan",
+                    "omh_gather_evidence",
+                    "omh_hud",
+                    "omh_interact",
+                    "omh_jev_ask",
+                    "omh_loop",
+                    "omh_memory",
+                    "omh_probe",
+                    "omh_recommend",
+                    "omh_resume",
+                    "omh_role",
+                    "omh_route_answer",
+                    "omh_run_summary",
+                    "omh_search",
+                    "omh_source_trust",
+                    "omh_status",
+                    "omh_team",
+                    "omh_todo",
+                ],
+            )
+            self.assertEqual(
+                plugin["registered_hooks"],
+                [
+                    "on_session_end",
+                    "on_session_start",
+                    "post_tool_call",
+                    "pre_llm_call",
+                    "pre_tool_call",
+                    "pre_verify",
+                    "subagent_start",
+                    "subagent_stop",
+                    "transform_llm_output",
+                    "transform_tool_result",
+                ],
+            )
+
+            inspection = inspect_plugin_bundle(resolve_paths(omh_home, hermes_home))
+            self.assertTrue(inspection["plugin_distribution_ready"])
+
+            doctor_status, doctor_stdout, doctor_stderr = run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "doctor"])
+            self.assertEqual(doctor_stderr, "")
+            self.assertEqual(doctor_status, 0)
+            checks = {check["name"]: check for check in json.loads(doctor_stdout)["checks"]}
+            self.assertTrue(checks["plugin_import_smoke"]["ok"])
+            self.assertTrue(checks["plugin_register_smoke"]["ok"])
+
+    def test_setup_smoke_accepts_host_without_optional_pre_verify_hook(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            hermes_cli = ModuleType("hermes_cli")
+            hermes_cli.__version__ = "0.21.1"
+            hermes_plugins = ModuleType("hermes_cli.plugins")
+            setattr(hermes_cli, "plugins", hermes_plugins)
+            setattr(
+                hermes_plugins,
+                "VALID_HOOKS",
+                {"on_session_end", "pre_llm_call", "pre_tool_call"},
+            )
+
+            with patch_modules({"hermes_cli": hermes_cli, "hermes_cli.plugins": hermes_plugins},
+            ):
+                status, stdout, stderr = run_cli(
+                    [
+                        "--omh-home",
+                        str(omh_home),
+                        "--hermes-home",
+                        str(hermes_home),
+                        "setup",
+                        "--with-plugin",
+                    ]
+                )
+                inspection = inspect_plugin_bundle(resolve_paths(omh_home, hermes_home))
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            plugin = json.loads(stdout)["plugin_distribution"]
+            self.assertEqual(
+                plugin["registered_hooks"],
+                ["on_session_end", "pre_llm_call", "pre_tool_call"],
+            )
+            self.assertTrue(plugin["register_smoke"])
+            self.assertEqual(plugin.get("missing_registered_hooks", []), [])
+
+            self.assertTrue(inspection["plugin_distribution_ready"])
+
+    def test_setup_with_plugin_dry_run_writes_nothing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+
+            status, stdout, stderr = run_cli(
+                ["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin", "--dry-run"]
+            )
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            payload = json.loads(stdout)
+            self.assertTrue(payload["plugin_distribution"]["dry_run"])
+            self.assertFalse(payload["plugin_distribution"]["observed"])
+            self.assertFalse((hermes_home / "plugins" / "omh").exists())
+
+    def test_setup_with_plugin_refuses_dirty_managed_files_without_force(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin"])[0], 0)
+            plugin_yaml = hermes_home / "plugins" / "omh" / "plugin.yaml"
+            plugin_yaml.write_text(plugin_yaml.read_text(encoding="utf-8") + "\n# local edit\n", encoding="utf-8")
+
+            status, _, stderr = run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin"])
+
+            self.assertEqual(status, 2)
+            self.assertIn("OMH status helper files were changed outside OMH", stderr)
+            self.assertIn("omh setup --force", stderr)
+            self.assertEqual(run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin", "--force"])[0], 0)
+
+    def test_doctor_reports_stale_plugin_bundle_as_plain_setup_refresh(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            base = ["--omh-home", str(omh_home), "--hermes-home", str(hermes_home)]
+            self.assertEqual(run_cli(base + ["setup", "--with-plugin"])[0], 0)
+
+            plugin_dir = hermes_home / "plugins" / "omh"
+            init_py = plugin_dir / "__init__.py"
+            text = init_py.read_text(encoding="utf-8")
+            stale_text = text.replace(
+                '    _ = ctx.register_tool(\n'
+                '        "omh_probe",\n'
+                "        _TOOLSET,\n"
+                "        OMH_PROBE_SCHEMA,\n"
+                "        omh_probe_handler,\n"
+                '        description=OMH_PROBE_SCHEMA["description"],\n'
+                "    )\n",
+                "",
+            ).replace(
+                '    _ = ctx.register_tool(\n'
+                '        "omh_recommend",\n'
+                "        _TOOLSET,\n"
+                "        OMH_RECOMMEND_SCHEMA,\n"
+                "        omh_recommend_handler,\n"
+                '        description=OMH_RECOMMEND_SCHEMA["description"],\n'
+                "    )\n",
+                "",
+            )
+            init_py.write_text(stale_text, encoding="utf-8", newline="")
+            manifest_path = plugin_dir / ".omh-plugin-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for record in manifest["files"]:
+                if record["path"] == "__init__.py":
+                    record["sha256"] = hashlib.sha256(stale_text.encode("utf-8")).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            inspection = inspect_plugin_bundle(resolve_paths(omh_home, hermes_home))
+            self.assertTrue(inspection["plugin_manifest_valid"])
+            self.assertFalse(inspection["plugin_manifest_current"])
+            self.assertTrue(inspection["plugin_bundle_stale"])
+            self.assertFalse(inspection["plugin_register_smoke"])
+            self.assertEqual(inspection["missing_registered_tools"], ["omh_probe", "omh_recommend"])
+            self.assertIn("stale relative to the installed OMH package", "; ".join(inspection["errors"]))
+
+            status, stdout, stderr = run_cli(base + ["doctor"])
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 1)
+            checks = {check["name"]: check for check in json.loads(stdout)["checks"]}
+            self.assertFalse(checks["plugin_bundle_current"]["ok"])
+            self.assertFalse(checks["plugin_register_smoke"]["ok"])
+            self.assertIn("omh setup", checks["plugin_register_smoke"]["next_action"])
+            self.assertNotIn("--force", checks["plugin_register_smoke"]["next_action"])
+            self.assertIn("omh_probe", checks["plugin_register_smoke"]["message"])
+
+            self.assertEqual(run_cli(base + ["setup"])[0], 0)
+            self.assertEqual(run_cli(base + ["doctor"])[0], 0)
+
+    def test_doctor_fails_for_malformed_installed_plugin(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin"])[0], 0)
+            (hermes_home / "plugins" / "omh" / "__init__.py").unlink()
+
+            status, stdout, stderr = run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "doctor"])
+
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 1)
+            checks = {check["name"]: check for check in json.loads(stdout)["checks"]}
+            self.assertFalse(checks["plugin_manifest"]["ok"])
+            self.assertFalse(checks["plugin_import_smoke"]["ok"])
+
+    def test_installed_plugin_status_tool_and_hook_keep_evidence_boundary(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            self.assertEqual(run_cli(["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin"])[0], 0)
+            status, stdout, _ = run_cli(
+                [
+                    "--omh-home",
+                    str(omh_home),
+                    "--hermes-home",
+                    str(hermes_home),
+                    "coding",
+                    "delegate",
+                    "--record",
+                    "--executor",
+                    "codex",
+                    "implement safe status feature in src/omh/runtime/status.py without overclaiming",
+                ]
+            )
+            self.assertEqual(status, 0)
+            run_id = json.loads(stdout)["runtime"]["run"]["run_id"]
+
+            module = load_installed_plugin(hermes_home / "plugins" / "omh")
+            installed_awareness = __import__(
+                f"{module.__name__}.awareness",
+                fromlist=["awareness_route_hint"],
+            )
+            specialist_cases = (
+                ("Compare Q2 actuals against budget and flag cash risks.", "finance-analysis"),
+                ("Create an interview scorecard and debrief plan.", "people-ops"),
+                ("Review this vendor DPA for data-processing risks.", "legal-compliance-review"),
+                ("Draft a reply for this customer and assess engineering escalation.", "support-operations"),
+                ("Design a curriculum with learning objectives.", "curriculum-design"),
+                ("Review terminology consistency and cultural fit.", "localization-review"),
+                ("Build a discovery plan and qualification questions.", "sales-development"),
+                ("Create a PRD with prioritization options.", "product-brief"),
+            )
+            for message, expected_workflow in specialist_cases:
+                with self.subTest(installed_specialist=expected_workflow):
+                    self.assertEqual(
+                        installed_awareness.awareness_route_hint(message)["primary_workflow"],
+                        expected_workflow,
+                    )
+
+            ctx = FakeHermesContext()
+            module.register(ctx)
+            self.assertIn("omh_capabilities", ctx.tools)
+            self.assertIn("omh_context", ctx.tools)
+            self.assertIn("omh_gather_evidence", ctx.tools)
+            self.assertIn("omh_hud", ctx.tools)
+            self.assertIn("omh_probe", ctx.tools)
+            self.assertIn("omh_role", ctx.tools)
+            self.assertIn("omh_status", ctx.tools)
+            self.assertIn("on_session_end", ctx.hooks)
+            self.assertIn("pre_llm_call", ctx.hooks)
+            self.assertIn("pre_tool_call", ctx.hooks)
+
+            hud_handler = ctx.tools["omh_hud"]["args"][2]
+            hud_payload = json.loads(hud_handler({"omh_home": str(omh_home), "hermes_home": str(hermes_home), "limit": 1}))
+            self.assertEqual(hud_payload["schema_version"], "omh_hud/v1")
+            self.assertIn("[omh]", hud_payload["display"]["line"])
+            self.assertEqual(hud_payload["runtime"]["evidence_state"], "prepared_not_observed")
+            self.assertEqual(hud_payload["tokens"]["status"], "unobserved")
+
+            probe_handler = ctx.tools["omh_probe"]["args"][2]
+            probe_payload = json.loads(
+                probe_handler(
+                    {
+                        "omh_home": str(omh_home),
+                        "hermes_home": str(hermes_home),
+                        "include_roadmap": True,
+                    }
+                )
+            )
+            self.assertEqual(probe_payload["source"], "package_probe_backend")
+            self.assertFalse(probe_payload["degraded"])
+            self.assertEqual(probe_payload["plugin_tool"], "omh_probe")
+            self.assertIn("capability_gap_roadmap", probe_payload)
+            self.assertEqual(probe_payload["capability_gap_roadmap"]["schema_version"], "omh_capability_gap_roadmap/v1")
+            self.assertIn("plugin_runtime_observed", {item["name"] for item in probe_payload["capabilities"]})
+
+            status, stdout, stderr = run_cli(
+                [
+                    "--omh-home",
+                    str(omh_home),
+                    "--hermes-home",
+                    str(hermes_home),
+                    "runtime",
+                    "observe",
+                    "--run",
+                    run_id,
+                    "--runtime-profile",
+                    "hermes",
+                    "--event",
+                    "worker_dispatch",
+                    "--summary",
+                    "executor session opened for the prepared handoff",
+                ]
+            )
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            self.assertEqual(json.loads(stdout)["journal_event"]["event"], "executor_dispatch_observed")
+
+            status, stdout, stderr = run_cli(
+                [
+                    "--omh-home",
+                    str(omh_home),
+                    "--hermes-home",
+                    str(hermes_home),
+                    "runtime",
+                    "observe",
+                    "--run",
+                    run_id,
+                    "--runtime-profile",
+                    "hermes",
+                    "--event",
+                    "worker_result",
+                    "--summary",
+                    "executor completed the prepared handoff",
+                ]
+            )
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            self.assertEqual(json.loads(stdout)["journal_event"]["event"], "executor_result_observed")
+
+            handler = ctx.tools["omh_status"]["args"][2]
+            payload = json.loads(handler({"omh_home": str(omh_home), "limit": 1}))
+            self.assertEqual(payload["schema_version"], "omh_status/v1")
+            self.assertEqual(payload["runs"][0]["run_id"], run_id)
+            self.assertTrue(payload["runs"][0]["prepared_handoff"])
+            self.assertTrue(payload["runs"][0]["execution_observed"])
+            self.assertEqual(payload["runs"][0]["observation_status"], "execution_observed")
+            self.assertEqual(payload["runs"][0]["latest_event"]["event"], "executor_result_observed")
+            self.assertTrue(payload["runs"][0]["lifecycle"]["execution_observed"])
+            self.assertGreaterEqual(payload["runs"][0]["journal_event_count"], 2)
+            self.assertIn("not execution evidence", payload["evidence_boundary"]["prepared_handoff"])
+
+            recommend_handler = ctx.tools["omh_recommend"]["args"][2]
+            recommendation = json.loads(
+                recommend_handler({"message": "make an image card for this PR with secret-token-123", "limit": 2})
+            )
+            self.assertEqual(recommendation["schema_version"], "omh_recommend_result/v1")
+            self.assertEqual(recommendation["status"], "recommended")
+            self.assertEqual(recommendation["source"], "package_recommend")
+            self.assertEqual(recommendation["message"]["raw_prompt_echoed"], False)
+            self.assertFalse(recommendation["message"]["raw_prompt_stored"])
+            self.assertTrue(recommendation["recommendations"])
+            self.assertEqual(recommendation["recommendations"][0]["skill"], "img-summary")
+            self.assertNotIn("secret-token-123", json.dumps(recommendation, sort_keys=True))
+            self.assertIn("<current user request>", recommendation["recommendations"][0]["suggested_prompt"])
+
+            context_handler = ctx.tools["omh_context"]["args"][2]
+            context_brief = json.loads(
+                context_handler(
+                    {
+                        "message": "make an image card for this PR with secret-token-123",
+                        "source": "discord",
+                        "limit": 2,
+                        "include_prompt_context": True,
+                    }
+                )
+            )
+            self.assertEqual(context_brief["schema_version"], "omh_context_brief/v1")
+            self.assertEqual(context_brief["plugin_tool"], "omh_context")
+            self.assertEqual(context_brief["source_backend"], "package_context")
+            self.assertEqual(context_brief["route_hint"]["primary_workflow"], "img-summary")
+            self.assertIn("generic tool can render", context_brief["normal_response_contract"]["when_generic_tool_is_available"])
+            self.assertIn("selected=img-summary", context_brief["prompt_context"])
+            self.assertFalse(context_brief["message"]["raw_prompt_echoed"])
+            self.assertNotIn("secret-token-123", json.dumps(context_brief, sort_keys=True))
+
+            # The probe is bounded to the host working directory; bind it to this fixture.
+            installed_runtime_paths = __import__(f"{module.__name__}.runtime_paths", fromlist=["runtime_cwd"])
+            cwd_patch = mock.patch.object(installed_runtime_paths, "runtime_cwd", return_value=root)
+            cwd_patch.start()
+            self.addCleanup(cwd_patch.stop)
+            evidence_handler = ctx.tools["omh_gather_evidence"]["args"][2]
+            evidence = json.loads(
+                evidence_handler(
+                    {
+                        "commands": ["python3 -m compileall -q ."],
+                        "project_root": str(root),
+                        "workdir": str(root),
+                        "timeout": 30,
+                        "truncate": 1000,
+                    }
+                )
+            )
+            self.assertEqual(evidence["schema_version"], "omh_evidence_probe/v1")
+            self.assertTrue(evidence["all_pass"])
+            self.assertEqual(evidence["results"][0]["evidence_type"], "observed_local_command")
+            self.assertIn("not executor dispatch", evidence["claim_boundary"])
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "OMH_HOME": str(omh_home),
+                    "HERMES_HOME": str(hermes_home),
+                    "OPENAI_API_KEY": "model-secret-do-not-print",
+                    "AWS_SECRET_ACCESS_KEY": "cloud-secret-do-not-print",
+                    "BUZZ_PRIVATE_KEY": "buzz-secret-do-not-print",
+                    "PYTHONPATH": "/tmp/inject",
+                    "DYLD_INSERT_LIBRARIES": "/tmp/inject.dylib",
+                },
+                clear=False,
+            ), mock.patch.object(evidence_tool.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = ""
+                run.return_value.stderr = ""
+                safe = json.loads(
+                    evidence_handler(
+                        {
+                            "commands": ["python3 -m compileall -q ."],
+                            "project_root": str(root),
+                            "workdir": str(root),
+                        }
+                    )
+                )
+            self.assertTrue(safe["all_pass"])
+            child_env = run.call_args.kwargs["env"]
+            self.assertEqual(
+                set(child_env),
+                {
+                    "HOME",
+                    "OMH_HOME",
+                    "HERMES_HOME",
+                    "LANG",
+                    "LC_ALL",
+                    "PATH",
+                    "PYTHONNOUSERSITE",
+                    "PYTHONPYCACHEPREFIX",
+                    "PYTHONSAFEPATH",
+                    "TMPDIR",
+                },
+            )
+            self.assertEqual(child_env["OMH_HOME"], str(omh_home.resolve()))
+            self.assertEqual(child_env["HERMES_HOME"], str(hermes_home.resolve()))
+            self.assertNotIn("OPENAI_API_KEY", child_env)
+            self.assertNotIn("AWS_SECRET_ACCESS_KEY", child_env)
+            self.assertNotIn("BUZZ_PRIVATE_KEY", child_env)
+            self.assertNotIn("PYTHONPATH", child_env)
+            self.assertNotIn("DYLD_INSERT_LIBRARIES", child_env)
+
+            rejected = json.loads(
+                evidence_handler(
+                    {
+                        "commands": ["python3 -m compileall -q .; echo bad"],
+                        "project_root": str(root),
+                        "workdir": str(root),
+                    }
+                )
+            )
+            self.assertFalse(rejected["all_pass"])
+            self.assertEqual(rejected["results"][0]["evidence_type"], "rejected")
+            self.assertIn("shell metacharacters", rejected["results"][0]["output_tail"])
+
+            bounded_root = root / "inside"
+            bounded_root.mkdir()
+            outside_workdir = json.loads(
+                evidence_handler(
+                    {
+                        "commands": ["python3 -m compileall -q ."],
+                        "project_root": str(bounded_root),
+                        "workdir": str(root),
+                    }
+                )
+            )
+            self.assertIn("workdir must stay within project_root", outside_workdir["error"])
+
+            role_handler = ctx.tools["omh_role"]["args"][2]
+            roles = json.loads(role_handler({"action": "list"}))
+            self.assertEqual(roles["schema_version"], "omh_role_catalog/v1")
+            self.assertIn("planner", roles["roles"])
+            self.assertEqual(roles["aliases"]["planning-lead"], "planner")
+            self.assertEqual(roles["aliases"]["retained-router"], "guide")
+            self.assertNotIn("retained-cognition", roles["aliases"])
+            role_payload = json.loads(role_handler({"action": "read", "role": "planner"}))
+            self.assertEqual(role_payload["schema_version"], "omh_role_context/v1")
+            self.assertEqual(role_payload["status"], "available")
+            self.assertEqual(role_payload["role"], "planner")
+            self.assertEqual(role_payload["resolved_role"], "planner")
+            self.assertIn("Planner", role_payload["context"])
+            self.assertIn("OMH Role Context", role_payload["context"])
+            self.assertIn("OMH workflow-layer responsibility context", role_payload["context"])
+            self.assertIn("not runtime delegation", role_payload["claim_boundary"])
+            legacy_role_payload = json.loads(role_handler({"action": "read", "role": "planning-lead"}))
+            self.assertEqual(legacy_role_payload["status"], "available")
+            self.assertEqual(legacy_role_payload["role"], "planner")
+            self.assertEqual(legacy_role_payload["requested_role"], "planning-lead")
+            self.assertEqual(legacy_role_payload["resolved_role"], "planner")
+            guide_role_payload = json.loads(role_handler({"action": "read", "role": "retained-router"}))
+            self.assertEqual(guide_role_payload["status"], "available")
+            self.assertEqual(guide_role_payload["resolved_role"], "guide")
+            category_seed_payload = json.loads(role_handler({"action": "read", "role": "retained-cognition"}))
+            self.assertEqual(category_seed_payload["status"], "unknown_role")
+
+            role_hook_payload = ctx.hooks["pre_llm_call"](
+                omh_home=str(omh_home),
+                user_message="[omh-role:planning-lead] do not leak this exact sentence",
+                is_first_turn=True,
+            )
+            self.assertIsNotNone(role_hook_payload)
+            role_context = role_hook_payload["context"]
+            self.assertIn("[OMH Role: planner]", role_context)
+            self.assertIn("Planner", role_context)
+            self.assertNotIn("do not leak this exact sentence", role_context)
+
+            self.assertIsNone(
+                ctx.hooks["pre_tool_call"](
+                    tool_name="delegate_task",
+                    tool_input={"goal": "[omh-role:planning-lead] prepare a plan"},
+                )
+            )
+            self.assertIsNone(
+                ctx.hooks["pre_tool_call"](
+                    tool_name="delegate_task",
+                    tool_input={"goal": "[omh-role:nope] prepare a plan"},
+                )
+            )
+            # The unknown role is warned in the child's own turn instead.
+            child_warning = ctx.hooks["pre_llm_call"](
+                omh_home=str(omh_home),
+                user_message="[omh-role:nope] prepare a plan",
+                platform="subagent",
+                is_first_turn=True,
+            )
+            self.assertIsNotNone(child_warning)
+            self.assertIn("Unknown role 'nope'", child_warning["context"])
+            self.assertIn("planner", child_warning["context"])
+
+            tool_checkpoint = ctx.hooks["pre_tool_call"](
+                tool_name="image_generate",
+                tool_input={"prompt": "secret-token-123 should not leak"},
+            )
+            self.assertIsNone(tool_checkpoint)
+
+            session_checkpoint = ctx.hooks["on_session_end"](omh_home=str(omh_home))
+            self.assertEqual(session_checkpoint["status"], "checkpoint_written")
+            checkpoint = json.loads((omh_home / "runtime" / "plugin-session-end.json").read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["schema_version"], "omh_plugin_session_end/v1")
+            self.assertEqual(checkpoint["privacy"], "metadata_only")
+            payload_after_checkpoint = json.loads(handler({"omh_home": str(omh_home), "limit": 1}))
+            self.assertEqual(
+                payload_after_checkpoint["plugin_session_end"]["schema_version"],
+                "omh_plugin_session_end/v1",
+            )
+
+            hook_payload = ctx.hooks["pre_llm_call"](
+                omh_home=str(omh_home),
+                user_message="review this PR; this raw prompt should not leak",
+                is_first_turn=True,
+            )
+            self.assertIsNotNone(hook_payload)
+            context = hook_payload["context"]
+            context_brief = hook_payload["omh_context_brief"]
+            self.assertIn("[OMH Awareness]", context)
+            self.assertIn("Hermes-native workflow guidance", context)
+            self.assertIn("durable, evidence-bounded artifact or handoff", context)
+            self.assertIn("tracks prepared against observed", context)
+            self.assertNotIn("consider OMH before generic tools", context)
+            self.assertIn("Use message-specific route hints", context)
+            self.assertIn("not observed execution", context)
+            self.assertIn("omh_capabilities", context)
+            self.assertIn("omh_context", context)
+            self.assertIn("omh_status/omh_hud", context)
+            self.assertNotIn("Native bridge status context", context)
+            self.assertNotIn("Pattern cards:", context)
+            self.assertNotIn("Common cues:", context)
+            self.assertNotIn("Tools:", context)
+            self.assertEqual(context_brief["schema_version"], "omh_context_brief/v1")
+            self.assertEqual(context_brief["source"], "pre_llm_call")
+            self.assertEqual(context_brief["message"]["raw_prompt_stored"], False)
+            self.assertEqual(context_brief["message"]["raw_prompt_echoed"], False)
+            self.assertNotIn("this raw prompt should not leak", context)
+            self.assertNotIn("this raw prompt should not leak", json.dumps(context_brief, sort_keys=True))
+
+            empty_first_turn_context = ctx.hooks["pre_llm_call"](
+                omh_home=str(root / ".empty-omh"),
+                user_message="make an image summary card for this PR",
+                is_first_turn=True,
+            )
+            self.assertIsNotNone(empty_first_turn_context)
+            self.assertIn("[OMH Awareness]", empty_first_turn_context["context"])
+            self.assertIn("[OMH Route Hint]", empty_first_turn_context["context"])
+            self.assertIn("selected=img-summary", empty_first_turn_context["context"])
+            self.assertNotIn("Pattern cards:", empty_first_turn_context["context"])
+            self.assertNotIn("make an image summary card for this PR", empty_first_turn_context["context"])
+
+            mid_session_visual_context = ctx.hooks["pre_llm_call"](
+                omh_home=str(root / ".empty-omh"),
+                user_message="회의록을 세로 요약 이미지 카드로 만들어줘",
+                is_first_turn=False,
+            )
+            self.assertIsNotNone(mid_session_visual_context)
+            self.assertIn("[OMH Awareness]", mid_session_visual_context["context"])
+            self.assertEqual(
+                mid_session_visual_context["omh_context_brief"]["route_hint"]["primary_workflow"],
+                "img-summary",
+            )
+            self.assertIn("selected=img-summary", mid_session_visual_context["context"])
+            self.assertIn("not_evidence_yet=file export", mid_session_visual_context["context"])
+            self.assertNotIn("Pattern cards:", mid_session_visual_context["context"])
+            self.assertNotIn("회의록을 세로 요약 이미지 카드로 만들어줘", mid_session_visual_context["context"])
+            self.assertNotIn(
+                "회의록을 세로 요약 이미지 카드로 만들어줘",
+                json.dumps(mid_session_visual_context["omh_context_brief"], sort_keys=True),
+            )
+
+            loop_route_context = ctx.hooks["pre_llm_call"](
+                omh_home=str(root / ".empty-omh"),
+                user_message="Make this a 100k-star OSS",
+                is_first_turn=False,
+            )
+            self.assertIsNotNone(loop_route_context)
+            loop_route_hint = loop_route_context["omh_context_brief"]["route_hint"]
+            self.assertEqual(loop_route_hint["primary_workflow"], "ulw-loop")
+            self.assertEqual(loop_route_hint["primary_next_action"], "reframe_north_star")
+            self.assertIn("selected=ulw-loop", loop_route_context["context"])
+            self.assertIn("next_action=reframe_north_star", loop_route_context["context"])
+            self.assertNotIn("next_action=assess_loopability", loop_route_context["context"])
+            self.assertNotIn("Make this a 100k-star OSS", loop_route_context["context"])
+
+            mid_session_generic_context = ctx.hooks["pre_llm_call"](
+                omh_home=str(root / ".empty-omh"),
+                user_message="tell me a short joke",
+                is_first_turn=False,
+            )
+            self.assertIsNone(mid_session_generic_context)
+
+            suppressed_awareness_context = ctx.hooks["pre_llm_call"](
+                omh_home=str(root / ".empty-omh"),
+                user_message="make a PR summary image card",
+                is_first_turn=False,
+                include_omh_awareness=False,
+            )
+            self.assertIsNone(suppressed_awareness_context)
+
+            mid_session_role_context = ctx.hooks["pre_llm_call"](
+                omh_home=str(root / ".empty-omh"),
+                user_message="[omh-role:planner] do not leak this mid-session prompt",
+                is_first_turn=False,
+                include_omh_awareness=False,
+            )
+            self.assertIsNotNone(mid_session_role_context)
+            self.assertIn("[OMH Role: planner]", mid_session_role_context["context"])
+            self.assertNotIn("do not leak this mid-session prompt", mid_session_role_context["context"])
+
+
+class PluginToolSchemaValidationTests(unittest.TestCase):
+    """omh#1437: register_smoke must catch a malformed tool schema locally
+    instead of only failing later at Hermes model-request time.
+    """
+
+    def _register_real_bundle(self):
+        from omh.plugin_bundle import omh as bundled_omh
+
+        ctx = _SmokeContext()
+        bundled_omh.register(ctx)
+        return ctx
+
+    def test_all_bundled_tool_schemas_pass_validation_unchanged(self) -> None:
+        ctx = self._register_real_bundle()
+        self.assertEqual(sorted(ctx.tools), sorted(PROVIDED_TOOLS))
+        self.assertEqual(validate_tool_definitions(ctx.tool_definitions), [])
+
+    def test_tool_missing_parameters_entirely_fails_and_names_the_tool(self) -> None:
+        from omh.plugin_bundle.omh.tools import capability_tool
+
+        broken = dict(capability_tool.OMH_CAPABILITIES_SCHEMA)
+        del broken["parameters"]
+        with mock.patch.object(capability_tool, "OMH_CAPABILITIES_SCHEMA", broken):
+            ctx = self._register_real_bundle()
+        self.assertIn("omh_capabilities", ctx.tools)
+        self.assertEqual(
+            validate_tool_definitions(ctx.tool_definitions),
+            [{"tool": "omh_capabilities", "rule": "tool_parameters_missing"}],
+        )
+
+    def test_tool_parameters_null_fails_with_stable_rule_id(self) -> None:
+        from omh.plugin_bundle.omh.tools import capability_tool
+
+        broken = dict(capability_tool.OMH_CAPABILITIES_SCHEMA)
+        broken["parameters"] = None
+        with mock.patch.object(capability_tool, "OMH_CAPABILITIES_SCHEMA", broken):
+            ctx = self._register_real_bundle()
+        self.assertEqual(
+            validate_tool_definitions(ctx.tool_definitions),
+            [{"tool": "omh_capabilities", "rule": "tool_parameters_not_a_mapping"}],
+        )
+
+    def test_tool_parameters_list_fails_with_stable_rule_id(self) -> None:
+        from omh.plugin_bundle.omh.tools import capability_tool
+
+        broken = dict(capability_tool.OMH_CAPABILITIES_SCHEMA)
+        broken["parameters"] = ["not", "a", "mapping"]
+        with mock.patch.object(capability_tool, "OMH_CAPABILITIES_SCHEMA", broken):
+            ctx = self._register_real_bundle()
+        self.assertEqual(
+            validate_tool_definitions(ctx.tool_definitions),
+            [{"tool": "omh_capabilities", "rule": "tool_parameters_not_a_mapping"}],
+        )
+
+    def test_tool_parameters_non_object_schema_fails_with_stable_rule_id(self) -> None:
+        from omh.plugin_bundle.omh.tools import capability_tool
+
+        broken = dict(capability_tool.OMH_CAPABILITIES_SCHEMA)
+        broken["parameters"] = {"type": "string"}
+        with mock.patch.object(capability_tool, "OMH_CAPABILITIES_SCHEMA", broken):
+            ctx = self._register_real_bundle()
+        self.assertEqual(
+            validate_tool_definitions(ctx.tool_definitions),
+            [{"tool": "omh_capabilities", "rule": "tool_parameters_type_not_object"}],
+        )
+
+    def test_tool_schema_name_mismatch_fails_before_installation_is_reported_ready(self) -> None:
+        from omh.plugin_bundle.omh.tools import capability_tool
+
+        broken = dict(capability_tool.OMH_CAPABILITIES_SCHEMA)
+        broken["name"] = "omh_wrong_name"
+        with mock.patch.object(capability_tool, "OMH_CAPABILITIES_SCHEMA", broken):
+            ctx = self._register_real_bundle()
+        self.assertEqual(
+            validate_tool_definitions(ctx.tool_definitions),
+            [{"tool": "omh_capabilities", "rule": "tool_schema_name_mismatch"}],
+        )
+
+    def test_setup_and_doctor_surface_tool_schema_failure_and_withhold_distribution_ready(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            base = ["--omh-home", str(omh_home), "--hermes-home", str(hermes_home)]
+            schema_failure = [{"tool": "omh_capabilities", "rule": "tool_parameters_missing"}]
+
+            with mock.patch("omh.install.plugin_pack.validate_tool_definitions", return_value=schema_failure):
+                status, stdout, stderr = run_cli(base + ["setup", "--with-plugin"])
+                self.assertEqual(stderr, "")
+                self.assertEqual(status, 0)
+                plugin = json.loads(stdout)["plugin_distribution"]
+                self.assertFalse(plugin["register_smoke"])
+                self.assertEqual(plugin["tool_schema_failures"], schema_failure)
+
+                inspection = inspect_plugin_bundle(resolve_paths(omh_home, hermes_home))
+                self.assertFalse(inspection["plugin_register_smoke"])
+                self.assertFalse(inspection["plugin_distribution_ready"])
+                self.assertEqual(inspection["tool_schema_failures"], schema_failure)
+                joined_errors = "; ".join(inspection["errors"])
+                self.assertIn("omh_capabilities", joined_errors)
+                self.assertIn("tool_parameters_missing", joined_errors)
+
+                doctor_status, doctor_stdout, doctor_stderr = run_cli(base + ["doctor"])
+                self.assertEqual(doctor_stderr, "")
+                self.assertEqual(doctor_status, 1)
+                checks = {check["name"]: check for check in json.loads(doctor_stdout)["checks"]}
+                self.assertFalse(checks["plugin_register_smoke"]["ok"])
+                self.assertIn("omh_capabilities", checks["plugin_register_smoke"]["message"])
+                self.assertIn("tool_parameters_missing", checks["plugin_register_smoke"]["message"])
+
+    def test_smoke_result_stays_evidence_bounded(self) -> None:
+        # Local schema/registration smoke must never be read as observed
+        # Hermes load or tool-use evidence -- it only proves the shape is
+        # locally coherent.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home = root / ".omh"
+            hermes_home = root / ".hermes"
+            status, stdout, stderr = run_cli(
+                ["--omh-home", str(omh_home), "--hermes-home", str(hermes_home), "setup", "--with-plugin"]
+            )
+            self.assertEqual(stderr, "")
+            self.assertEqual(status, 0)
+            plugin = json.loads(stdout)["plugin_distribution"]
+            self.assertIn("does not prove Hermes loaded or used the plugin", plugin["observed_scope"])
+
+
+class PluginReinstallSafetyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.paths = resolve_paths(self.root / ".omh", self.root / ".hermes")
+        install_plugin_bundle(self.paths)
+        self.target = self.paths.hermes_plugin_dir
+
+    def test_unknown_entries_are_not_owned_by_location_or_extension(self) -> None:
+        for relative in (
+            "private.txt", "hooks/local.py", ".private", "private.pyc",
+            "__pycache__/private.txt", "__pycache__/private.pyc", "empty-user-dir",
+        ):
+            with self.subTest(relative=relative):
+                extra = self.target / relative
+                extra.parent.mkdir(parents=True, exist_ok=True)
+                if relative == "empty-user-dir":
+                    extra.mkdir()
+                else:
+                    extra.write_bytes(b"user-owned content\n")
+                with self.assertRaisesRegex(PluginPackError, "unmanaged plugin entries"):
+                    install_plugin_bundle(self.paths)
+                self.assertTrue(extra.exists())
+                if extra.is_dir():
+                    extra.rmdir()
+                else:
+                    self.assertEqual(extra.read_bytes(), b"user-owned content\n")
+                    extra.unlink()
+
+    def test_a_new_bundled_path_is_not_owned_by_the_old_manifest(self) -> None:
+        manifest_path = self.target / PLUGIN_MANAGED_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"] = [record for record in manifest["files"] if record["path"] != "memory_provider.py"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(PluginPackError, "memory_provider.py"):
+            install_plugin_bundle(self.paths)
+
+    def test_unchanged_obsolete_managed_files_are_removed_on_refresh(self) -> None:
+        obsolete = self.target / "obsolete.py"
+        obsolete.write_bytes(b"# previously shipped\n")
+        manifest_path = self.target / PLUGIN_MANAGED_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append({"path": obsolete.name, "sha256": hashlib.sha256(obsolete.read_bytes()).hexdigest()})
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        result = install_plugin_bundle(self.paths)
+        self.assertTrue(result["changed"])
+        self.assertFalse(obsolete.exists())
+        self.assertTrue(inspect_plugin_bundle(self.paths)["plugin_manifest_current"])
+
+    def test_counterfeit_bytecode_is_preserved_until_force(self) -> None:
+        cache = Path(importlib.util.cache_from_source(str(self.target / "__init__.py")))
+        cache.parent.mkdir(exist_ok=True)
+        fake = importlib.util.MAGIC_NUMBER + b"\0" * 12 + b"private user data"
+        cache.write_bytes(fake)
+        with self.assertRaisesRegex(PluginPackError, "unmanaged plugin entries"):
+            install_plugin_bundle(self.paths)
+        self.assertEqual(cache.read_bytes(), fake)
+        install_plugin_bundle(self.paths, force=True)
+        # Import smoke may generate a fresh cache in the replacement tree.
+        if cache.exists():
+            self.assertNotEqual(cache.read_bytes(), fake)
+
+    def test_generated_bytecode_does_not_block_reinstall(self) -> None:
+        import py_compile
+
+        cache = Path(py_compile.compile(str(self.target / "__init__.py"), doraise=True))
+        self.assertTrue(cache.is_file())
+        result = install_plugin_bundle(self.paths)
+        self.assertFalse(result["changed"])
+        self.assertTrue(result["register_smoke"])
+
+    def test_counterfeit_bytecode_variants_are_preserved(self) -> None:
+        import py_compile
+
+        cache_name = py_compile.compile(str(self.target / "__init__.py"), doraise=True)
+        self.assertIsInstance(cache_name, str)
+        cache = Path(cache_name)
+        valid = cache.read_bytes()
+        for payload in (
+            valid[:16],  # no marshal payload
+            valid[:16] + b"N",  # valid marshal value, but not code
+            valid[:-1],  # truncated code object
+            valid + b"private trailing data",
+            valid[:4] + (2).to_bytes(4, "little") + valid[8:],  # invalid flags
+        ):
+            with self.subTest(payload=payload[:20]):
+                cache.write_bytes(payload)
+                with self.assertRaisesRegex(PluginPackError, "unmanaged plugin entries"):
+                    install_plugin_bundle(self.paths)
+                self.assertEqual(cache.read_bytes(), payload)
+
+    def _foreign_cache(self, tag: str, magic: bytes) -> Path:
+        cache = self.target / "__pycache__" / f"__init__.{tag}.pyc"
+        cache.parent.mkdir(exist_ok=True)
+        cache.write_bytes(magic + b"\0" * 12 + b"payload another interpreter can read")
+        return cache
+
+    def test_another_interpreters_bytecode_does_not_block_reinstall(self) -> None:
+        # Hermes loads the plugin with its own Python; on a machine where that
+        # is not omh's Python every managed module leaves a cache this
+        # interpreter cannot unmarshal, and treating those as additions made
+        # every `omh update` skip the plugin refresh.
+        version = int.from_bytes(importlib.util.MAGIC_NUMBER[:2], "little")
+        self._foreign_cache("cpython-39", (version - 1).to_bytes(2, "little") + b"\r\n")
+        result = install_plugin_bundle(self.paths)
+        self.assertFalse(result["changed"])
+        self.assertTrue(result["register_smoke"])
+
+    def test_foreign_bytecode_counterfeits_are_preserved(self) -> None:
+        version = int.from_bytes(importlib.util.MAGIC_NUMBER[:2], "little")
+        foreign_magic = (version - 1).to_bytes(2, "little") + b"\r\n"
+        for tag, magic in (
+            (sys.implementation.cache_tag, foreign_magic),  # foreign magic under our own tag
+            ("cpython-39", foreign_magic[:2] + b"\0\0"),  # not a magic number at all
+        ):
+            with self.subTest(tag=tag, magic=magic):
+                cache = self._foreign_cache(tag, magic)
+                payload = cache.read_bytes()
+                with self.assertRaisesRegex(PluginPackError, "unmanaged plugin entries"):
+                    install_plugin_bundle(self.paths)
+                self.assertEqual(cache.read_bytes(), payload)
+                cache.unlink()
+
+    def test_hash_generated_bytecode_does_not_block_reinstall(self) -> None:
+        import py_compile
+
+        for mode in (py_compile.PycInvalidationMode.CHECKED_HASH, py_compile.PycInvalidationMode.UNCHECKED_HASH):
+            with self.subTest(mode=mode):
+                cache_name = py_compile.compile(
+                    str(self.target / "__init__.py"), doraise=True, invalidation_mode=mode
+                )
+                self.assertIsInstance(cache_name, str)
+                self.assertTrue(Path(cache_name).is_file())
+                self.assertTrue(install_plugin_bundle(self.paths)["register_smoke"])
+
+    def test_first_install_refuses_competing_catalog_tree_arriving_during_staging(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        shutil.rmtree(self.target)
+        self.assertFalse(self.target.exists())
+        original_copy = plugin_pack_module._copy_resource_tree
+        private = b"private competing plugin data\x00\xff"
+        sidecar = b'{"catalog_name":"omh","repo":"https://example.invalid/omh","sha":"abc123"}\n'
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                self.target.mkdir()
+                (self.target / "private.txt").write_bytes(private)
+                (self.target / ".hermes-catalog.json").write_bytes(sidecar)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaises(PluginPackError):
+                install_plugin_bundle(self.paths)
+        self.assertEqual((self.target / "private.txt").read_bytes(), private)
+        self.assertEqual((self.target / ".hermes-catalog.json").read_bytes(), sidecar)
+        self.assertFalse((self.target / PLUGIN_MANAGED_MANIFEST).exists())
+        self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh"})
+
+    def test_force_does_not_claim_new_managed_tree_after_initially_empty_path(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        private = b"private newly managed data\x00\xff"
+        (self.target / "private.txt").write_bytes(private)
+        manifest = (self.target / PLUGIN_MANAGED_MANIFEST).read_bytes()
+        competing = self.root / "competing-managed-plugin"
+        self.target.rename(competing)
+        self.assertFalse(self.target.exists())
+        original_copy = plugin_pack_module._copy_resource_tree
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                competing.rename(self.target)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaisesRegex(PluginPackError, "appeared during staging"):
+                install_plugin_bundle(self.paths, force=True)
+        self.assertEqual((self.target / "private.txt").read_bytes(), private)
+        self.assertEqual((self.target / PLUGIN_MANAGED_MANIFEST).read_bytes(), manifest)
+        self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh"})
+
+    def test_force_refuses_catalog_takeover_during_staging(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        original_copy = plugin_pack_module._copy_resource_tree
+        private = b"private host-owned plugin data\x00\xff"
+        sidecar = b'{"catalog_name":"omh","repo":"https://example.invalid/omh","sha":"abc123"}\n'
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                (self.target / PLUGIN_MANAGED_MANIFEST).unlink()
+                (self.target / "private.txt").write_bytes(private)
+                (self.target / ".hermes-catalog.json").write_bytes(sidecar)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaises(PluginPackError):
+                install_plugin_bundle(self.paths, force=True)
+        self.assertEqual((self.target / "private.txt").read_bytes(), private)
+        self.assertEqual((self.target / ".hermes-catalog.json").read_bytes(), sidecar)
+        self.assertFalse((self.target / PLUGIN_MANAGED_MANIFEST).exists())
+        self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh"})
+
+    @requires_symlinks
+    def test_force_refuses_catalog_takeover_through_relative_plugin_link(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        shared = self.target.parent / "shared"
+        self.target.rename(shared)
+        self.target.symlink_to("shared", target_is_directory=True)
+        original_copy = plugin_pack_module._copy_resource_tree
+        private = b"host-owned data behind relative link\n"
+        sidecar = b'{"catalog_name":"omh","repo":"https://example.invalid/omh","sha":"abc123"}\n'
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                (shared / PLUGIN_MANAGED_MANIFEST).unlink()
+                (shared / "private.txt").write_bytes(private)
+                (shared / ".hermes-catalog.json").write_bytes(sidecar)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaisesRegex(PluginPackError, "Hermes-managed"):
+                install_plugin_bundle(self.paths, force=True)
+        self.assertTrue(self.target.is_symlink())
+        self.assertEqual(os.readlink(self.target), "shared")
+        self.assertEqual((shared / "private.txt").read_bytes(), private)
+        self.assertEqual((shared / ".hermes-catalog.json").read_bytes(), sidecar)
+        self.assertFalse((shared / PLUGIN_MANAGED_MANIFEST).exists())
+
+    def test_force_refuses_metadata_only_host_takeover_during_staging(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        original_copy = plugin_pack_module._copy_resource_tree
+        private = b"host-only private data\x00\xff"
+        metadata = b'{"omh":{"source":"https://example.invalid/omh","revision":"abc123"}}\n'
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                (self.target / PLUGIN_MANAGED_MANIFEST).unlink()
+                (self.target / "private.txt").write_bytes(private)
+                (self.target.parent / ".install-metadata.json").write_bytes(metadata)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaises(PluginPackError):
+                install_plugin_bundle(self.paths, force=True)
+        self.assertEqual((self.target / "private.txt").read_bytes(), private)
+        self.assertEqual((self.target.parent / ".install-metadata.json").read_bytes(), metadata)
+        self.assertFalse((self.target / PLUGIN_MANAGED_MANIFEST).exists())
+        self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh", ".install-metadata.json"})
+
+    def test_addition_during_staging_is_restored_without_replacing_bundle(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        original_copy = plugin_pack_module._copy_resource_tree
+        original_manifest = (self.target / PLUGIN_MANAGED_MANIFEST).read_bytes()
+        extra = self.target / "arrived-during-staging.txt"
+        payload = b"private late arrival\n"
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                extra.write_bytes(payload)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaisesRegex(PluginPackError, "arrived-during-staging.txt"):
+                install_plugin_bundle(self.paths)
+        self.assertEqual(extra.read_bytes(), payload)
+        self.assertEqual((self.target / PLUGIN_MANAGED_MANIFEST).read_bytes(), original_manifest)
+        self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh"})
+
+    def test_managed_edit_during_staging_is_restored_without_replacing_bundle(self) -> None:
+        from omh.install import plugin_pack as plugin_pack_module
+
+        original_copy = plugin_pack_module._copy_resource_tree
+        original_manifest = (self.target / PLUGIN_MANAGED_MANIFEST).read_bytes()
+        managed = self.target / "__init__.py"
+        payload = b"# private late edit\n"
+
+        def inject(root: Any, dest: Path) -> None:
+            original_copy(root, dest)
+            if dest.name == ".omh.installing":
+                managed.write_bytes(payload)
+
+        with mock.patch.object(plugin_pack_module, "_copy_resource_tree", side_effect=inject):
+            with self.assertRaisesRegex(PluginPackError, "managed plugin files changed: __init__.py"):
+                install_plugin_bundle(self.paths)
+        self.assertEqual(managed.read_bytes(), payload)
+        self.assertEqual((self.target / PLUGIN_MANAGED_MANIFEST).read_bytes(), original_manifest)
+        self.assertEqual({entry.name for entry in self.target.parent.iterdir()}, {"omh"})
+
+    def test_existing_transaction_siblings_survive_setup_and_update(self) -> None:
+        base = ["--omh-home", str(self.paths.omh_home), "--hermes-home", str(self.paths.hermes_home)]
+        sentinels = []
+        for name in (".omh.previous", ".omh.installing"):
+            sibling = self.target.parent / name
+            sibling.mkdir()
+            sentinel = sibling / "private.txt"
+            sentinel.write_bytes(b"unrelated sibling data\n")
+            sentinels.append(sentinel)
+        for command in ("setup", "update"):
+            for extra in ([], ["--force"]):
+                with self.subTest(command=command, extra=extra):
+                    status, _, stderr = run_cli(base + [command, *extra])
+                    self.assertEqual(status, 0, stderr)
+                    for sentinel in sentinels:
+                        self.assertTrue(sentinel.is_file())
+                        self.assertEqual(sentinel.read_bytes(), b"unrelated sibling data\n")
+                    self.assertEqual(
+                        {entry.name for entry in self.target.parent.iterdir()},
+                        {"omh", ".omh.previous", ".omh.installing"},
+                    )
+
+    def test_failed_rollback_keeps_original_in_private_transaction(self) -> None:
+        original = (self.target / PLUGIN_MANAGED_MANIFEST).read_bytes()
+        real_rename = Path.rename
+        backups = []
+
+        def fail_install_and_rollback(path: Path, dest: Any) -> Path:
+            if Path(dest) == self.target:
+                raise OSError(errno.EACCES, "forced install and rollback failure")
+            result = real_rename(path, dest)
+            if path == self.target:
+                backups.append(Path(dest))
+            return result
+
+        with mock.patch.object(Path, "rename", fail_install_and_rollback):
+            with self.assertRaises(OSError) as raised:
+                install_plugin_bundle(self.paths)
+        self.assertEqual(len(backups), 1)
+        backup = backups[0]
+        self.assertEqual((backup / PLUGIN_MANAGED_MANIFEST).read_bytes(), original)
+        self.assertNotEqual(backup.parent, self.target.parent)
+        self.assertIn(str(backup), str(raised.exception))
+        self.assertIn("rollback", str(raised.exception))
+        self.assertFalse((backup.parent / ".omh.installing").exists())
+        if os.name != "nt":
+            self.assertEqual(backup.parent.stat().st_mode & 0o777, 0o700)
+
+    @requires_symlinks
+    def test_unknown_symlinks_are_not_traversed_or_removed_without_force(self) -> None:
+        external = self.root / "external"
+        external.mkdir()
+        private = external / "private.txt"
+        private.write_bytes(b"external user data\n")
+        for destination in (external, private, self.root / "missing"):
+            with self.subTest(destination=destination):
+                link = self.target / "local-link"
+                link.symlink_to(destination, target_is_directory=destination != private)
+                real_iterdir = Path.iterdir
+
+                def guarded_iterdir(path: Path):
+                    if path == link or path == external:
+                        self.fail("unknown symlinks must not be traversed")
+                    return real_iterdir(path)
+
+                with mock.patch.object(Path, "iterdir", guarded_iterdir):
+                    with self.assertRaisesRegex(PluginPackError, "local-link"):
+                        install_plugin_bundle(self.paths)
+                self.assertTrue(link.is_symlink())
+                install_plugin_bundle(self.paths, force=True)
+                self.assertFalse(link.is_symlink())
+                self.assertEqual(private.read_bytes(), b"external user data\n")
+
+
+class UpdateRefreshesTheBundleTests(unittest.TestCase):
+    """`omh update` used to leave the installed bundle at its old version.
+
+    `install_plugin_bundle` was reachable only from `cmd_setup`, so an operator
+    who ran `omh update` got new workflows against old plugin code -- the tools,
+    hooks, and now the memory provider under `$HERMES_HOME/plugins/omh/` stayed
+    where the last `omh setup` left them. AGENTS.md tells ordinary users they
+    need setup, update, and doctor; update was the one not doing its name.
+    """
+
+    def _bundle_dir(self, hermes_home: Path) -> Path:
+        return hermes_home / "plugins" / "omh"
+
+    def test_update_preserves_unknown_files_and_reports_refusal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+
+            stray = self._bundle_dir(root / ".hermes") / "private.txt"
+            stray.write_bytes(b"user-owned notes\n")
+            manifest = stray.parent / ".omh-plugin-manifest.json"
+            before = manifest.read_bytes()
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(stray.is_file())
+            self.assertEqual(stray.read_bytes(), b"user-owned notes\n")
+            self.assertEqual(manifest.read_bytes(), before)
+            self.assertIn("unmanaged plugin entries", stderr)
+            self.assertIn("private.txt", stderr)
+            self.assertIn("--force", stderr)
+            self.assertTrue((self._bundle_dir(root / ".hermes") / "memory_provider.py").is_file())
+
+    def test_setup_refuses_unknown_files_until_force_is_given(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            stray = self._bundle_dir(root / ".hermes") / "private.txt"
+            stray.write_bytes(b"user-owned notes\n")
+            manifest = stray.parent / ".omh-plugin-manifest.json"
+            before = manifest.read_bytes()
+
+            for extra in ([], ["--dry-run"]):
+                with self.subTest(extra=extra):
+                    status, stdout, stderr = run_cli(base + ["setup", *extra])
+                    self.assertNotEqual(status, 0)
+                    self.assertIn("unmanaged plugin entries", stdout + stderr)
+                    self.assertIn("private.txt", stdout + stderr)
+                    self.assertIn("--force", stdout + stderr)
+                    self.assertEqual(stray.read_bytes(), b"user-owned notes\n")
+                    self.assertEqual(manifest.read_bytes(), before)
+
+            status, _, stderr = run_cli(base + ["setup", "--force"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(stray.exists())
+
+    def test_update_bootstraps_a_bundle_setup_never_installed(self) -> None:
+        # Update and setup converge on the same machine state (owner decision,
+        # 2026-08-20): a machine that only ever ran `omh update` still gets the
+        # plugin bundle, the registration, and the seeded chain overrides —
+        # the full pair, not the half that is worse than neither. Neither
+        # installs anything into Hermes' terminal any more.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue((self._bundle_dir(root / ".hermes") / "memory_provider.py").is_file())
+            self.assertFalse((root / ".hermes" / "tui-widgets").exists())
+            self.assertTrue((root / ".omh" / "routing" / "model-chains.json").is_file())
+            config_text = (root / ".hermes" / "config.yaml").read_text(encoding="utf-8")
+            self.assertIn("provider: omh", config_text)
+            self.assertNotIn("display:", config_text)
+
+    def test_a_dry_run_update_leaves_the_installed_bundle_alone(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            run_cli(base + ["setup"])
+            stray = self._bundle_dir(root / ".hermes") / "stray_from_an_older_version.py"
+            stray.write_text("# left behind by an older bundle\n", encoding="utf-8")
+
+            status, _, stderr = run_cli(base + ["update", "--dry-run"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(stray.exists())
+
+    def test_a_drifted_bundle_does_not_fail_the_update(self) -> None:
+        # A managed file edited outside OMH makes the reinstall refuse. Update
+        # must still succeed for everything else; `omh doctor` reports the drift
+        # with the `omh setup --force` instruction that repairs it.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            run_cli(base + ["setup"])
+            marker = self._bundle_dir(root / ".hermes") / "__init__.py"
+            marker.write_text("# edited outside OMH\n", encoding="utf-8")
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "# edited outside OMH\n")
+
+
+@requires_symlinks
+class SymlinkedPluginDirectoryTests(unittest.TestCase):
+    """A plugin directory that is a link, not a directory (issue from PR #1430).
+
+    An older OMH layout pointed a bot profile's `plugins/omh` at a shared
+    location with a symlink. `_copy_plugin_bundle` renamed that link aside to
+    `.omh.previous` and then cleaned up with `shutil.rmtree(..., ignore_errors=True)`,
+    which cannot unlink a symlink: it descends into the target, fails, and says
+    nothing. The stale link survived, and the next update's
+    `target.rename(backup)` hit `rename(dir, symlink)` -- ENOTDIR -- and took
+    down `omh update` for every profile on the machine.
+
+    The link is also what the ownership guard has to see. `Path.exists` follows
+    it, so a dangling link reads as an empty path and would let the replacement
+    run without `--force` on something OMH never wrote.
+    """
+
+    def _bundle_dir(self, hermes_home: Path) -> Path:
+        return hermes_home / "plugins" / "omh"
+
+    def _link_bundle_to_shared(self, root: Path) -> tuple[Path, Path]:
+        """Recreate the older layout: `plugins/omh` is a link to a shared tree."""
+        bundle = self._bundle_dir(root / ".hermes")
+        shared = root / ".hermes" / "shared-omh"
+        bundle.rename(shared)
+        bundle.symlink_to(shared, target_is_directory=True)
+        return bundle, shared
+
+    def test_two_consecutive_updates_replace_a_symlinked_bundle(self) -> None:
+        # One update is not enough to prove the fix: the crash was on the
+        # SECOND update, after the first one left an unremovable `.omh.previous`
+        # link behind. Both updates have to succeed and the leftover has to be
+        # gone before the machine is actually repaired.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            bundle, _ = self._link_bundle_to_shared(root)
+            self.assertTrue(bundle.is_symlink())
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(bundle.is_symlink())
+            self.assertTrue((bundle / "memory_provider.py").is_file())
+
+            leftover = bundle.parent / ".omh.previous"
+            self.assertFalse(leftover.is_symlink())
+            self.assertFalse(leftover.exists())
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue((bundle / "memory_provider.py").is_file())
+
+    def test_a_stale_previous_link_does_not_block_an_update(self) -> None:
+        # The leftover from the old code path, reproduced directly: a machine
+        # that already carries `.omh.previous` as a symlink must still update.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            bundle = self._bundle_dir(root / ".hermes")
+            stale = bundle.parent / ".omh.previous"
+            stale.symlink_to(root / ".hermes" / "gone", target_is_directory=True)
+
+            status, _, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(stale.is_symlink())
+            self.assertEqual(os.readlink(stale), str(root / ".hermes" / "gone"))
+            self.assertTrue((bundle / "memory_provider.py").is_file())
+
+    def test_a_dangling_plugin_link_is_kept_without_force(self) -> None:
+        # `Path.exists` follows the link, so a dangling one reads as absent.
+        # Without the link-aware ownership guard the replacement path runs on
+        # a link OMH cannot prove it wrote, and the operator's pointer is gone
+        # with a clean exit code. It has to be kept and named instead.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            bundle, shared = self._link_bundle_to_shared(root)
+            shutil.rmtree(shared)
+            self.assertTrue(bundle.is_symlink())
+            self.assertFalse(bundle.exists())
+
+            status, stdout, stderr = run_cli(base + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(bundle.is_symlink())
+            self.assertEqual(os.readlink(bundle), str(shared))
+            self.assertIn("use --force to replace it", stdout + stderr)
+
+    def test_a_dangling_plugin_link_is_replaced_with_force(self) -> None:
+        # The other half of that guard, and the reason the replacement asks
+        # `is_directory_link` and not only `exists`. The note above tells the
+        # operator that --force is the remedy; when --force then died on
+        # `rename(dir, symlink)` with ENOTDIR, the guard was naming a remedy
+        # that did not exist.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            bundle, shared = self._link_bundle_to_shared(root)
+            shutil.rmtree(shared)
+
+            status, _, stderr = run_cli(base + ["update", "--force"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse(bundle.is_symlink())
+            self.assertTrue((bundle / "memory_provider.py").is_file())
+            self.assertFalse((bundle.parent / ".omh.previous").is_symlink())
+            self.assertFalse((bundle.parent / ".omh.previous").exists())
+
+    def _rename_failing_into(self, target: Path) -> Any:
+        """Patch for `Path.rename` that fails only the install of the new tree.
+
+        The rollback renames `.omh.previous` back onto the same target, so the
+        source name is what separates the two -- matching on the destination
+        alone would break the rollback this is meant to exercise.
+        """
+        real_rename = Path.rename
+
+        def failing_rename(self: Path, dest: Any) -> Path:
+            if self.name.endswith(".installing") and Path(dest) == target:
+                raise OSError(errno.EXDEV, "forced install failure")
+            return real_rename(self, dest)
+
+        return failing_rename
+
+    def test_a_failed_rename_restores_a_symlinked_bundle(self) -> None:
+        # The rollback is the whole reason the replacement renames aside rather
+        # than deleting. If the install of the new tree fails after the link has
+        # been moved to `.omh.previous`, the operator gets their link back.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home, hermes_home = root / ".omh", root / ".hermes"
+            base = ["--omh-home", str(omh_home), "--hermes-home", str(hermes_home)]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            _, shared = self._link_bundle_to_shared(root)
+            # `resolve_paths` resolves the home, so the product's spelling of
+            # the plugin directory is the one the rename is compared against.
+            paths = resolve_paths(omh_home, hermes_home)
+            target = paths.hermes_plugin_dir
+
+            with mock.patch.object(Path, "rename", self._rename_failing_into(target)):
+                with self.assertRaises(OSError):
+                    install_plugin_bundle(paths)
+
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(os.readlink(target), str(shared))
+            self.assertFalse((target.parent / ".omh.previous").exists())
+            self.assertFalse((target.parent / ".omh.previous").is_symlink())
+            self.assertFalse((target.parent / ".omh.installing").exists())
+
+    def test_a_failed_rename_restores_a_dangling_plugin_link(self) -> None:
+        # The case the rollback could not see. A dangling link renamed aside to
+        # `.omh.previous` answers False to `backup.exists()`, so reading it as
+        # absent leaves the target gone and the operator's link stranded under
+        # the backup name -- the one outcome the error message cannot help them
+        # undo, because it never names where the link went.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            omh_home, hermes_home = root / ".omh", root / ".hermes"
+            base = ["--omh-home", str(omh_home), "--hermes-home", str(hermes_home)]
+            status, _, stderr = run_cli(base + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            _, shared = self._link_bundle_to_shared(root)
+            shutil.rmtree(shared)
+            paths = resolve_paths(omh_home, hermes_home)
+            target = paths.hermes_plugin_dir
+
+            with mock.patch.object(Path, "rename", self._rename_failing_into(target)):
+                with self.assertRaises(OSError):
+                    install_plugin_bundle(paths, force=True)
+
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(os.readlink(target), str(shared))
+            self.assertFalse((target.parent / ".omh.previous").is_symlink())
+            self.assertFalse((target.parent / ".omh.previous").exists())
+            self.assertFalse((target.parent / ".omh.installing").exists())
+
+
+class UpdateCarriesRegistrationTests(unittest.TestCase):
+    """`omh setup` is meant to be run once, and it stopped being.
+
+    Every release that added something to Hermes' config which only setup wrote
+    made setup a recurring chore: update refreshed skills and the bundle, the
+    new key never landed, and the instruction became "run setup again". The
+    memory-provider slot was the latest instance and will not be the last.
+    """
+
+    def _base(self, root: Path) -> list[str]:
+        return ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+
+    def _config(self, root: Path) -> Path:
+        return root / ".hermes" / "config.yaml"
+
+    def _downgrade(self, root: Path) -> None:
+        """Make a registered install look like one from before the slot existed."""
+        config = self._config(root)
+        config.write_text(config.read_text(encoding="utf-8").replace("  provider: omh", "  provider: ''"), encoding="utf-8")
+
+    def test_update_alone_brings_a_registered_install_up_to_date(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            self._downgrade(root)
+            self.assertIn("provider: ''", self._config(root).read_text(encoding="utf-8"))
+
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("provider: omh", self._config(root).read_text(encoding="utf-8"))
+
+    def test_update_registers_a_machine_setup_never_touched(self) -> None:
+        # Update bootstraps the full TUI surface on a never-set-up machine
+        # (owner decision, 2026-08-20): registration included, because plugin
+        # files without Hermes enablement render nothing.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("provider: omh", self._config(root).read_text(encoding="utf-8"))
+
+    def test_update_seeds_the_chain_overrides_on_a_registered_install(self) -> None:
+        # Same carry-forward rule as registration: a document only setup seeds
+        # never lands on machines that update forever. Create-only — a user's
+        # edited document survives the next update untouched.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            chains = root / ".omh" / "routing" / "model-chains.json"
+            chains.unlink()
+
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue(chains.is_file())
+
+            custom = '{"schema_version": "mixture_chain_overrides/v1", "categories": {"deep": [{"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"}]}}'
+            chains.write_text(custom, encoding="utf-8")
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(chains.read_text(encoding="utf-8"), custom)
+
+    def test_update_respects_a_deliberate_unregistration(self) -> None:
+        # `omh uninstall --registration-only` keeps the plugin directory, so
+        # update never reaches the bootstrap path and must not re-register a
+        # machine whose owner removed the registration on purpose.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            status, _, stderr = run_cli(self._base(root) + ["uninstall", "--registration-only"])
+            self.assertEqual(status, 0, stderr)
+            unregistered = self._config(root).read_text(encoding="utf-8")
+
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(self._config(root).read_text(encoding="utf-8"), unregistered)
+
+    def test_update_never_takes_a_slot_another_product_holds(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            config = self._config(root)
+            config.write_text(config.read_text(encoding="utf-8").replace("  provider: omh", "  provider: honcho"), encoding="utf-8")
+
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("provider: honcho", config.read_text(encoding="utf-8"))
+
+    def test_a_dry_run_update_rewrites_no_config(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            self._downgrade(root)
+            before = self._config(root).read_text(encoding="utf-8")
+
+            status, _, stderr = run_cli(self._base(root) + ["update", "--dry-run"])
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(self._config(root).read_text(encoding="utf-8"), before)
+
+    def test_update_is_idempotent_once_registration_is_current(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            run_cli(self._base(root) + ["update"])
+            before = self._config(root).read_text(encoding="utf-8")
+            run_cli(self._base(root) + ["update"])
+            self.assertEqual(self._config(root).read_text(encoding="utf-8"), before)
+
+    def test_setup_is_not_needed_a_second_time_for_a_new_registration(self) -> None:
+        # The whole point: one setup, then update forever.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            self._downgrade(root)
+            (self._bundle_stray(root)).write_text("# older bundle\n", encoding="utf-8")
+
+            run_cli(self._base(root) + ["update"])
+
+            config = self._config(root).read_text(encoding="utf-8")
+            self.assertIn("provider: omh", config)
+            self.assertIn((root / ".omh" / "skills").resolve().as_posix(), config)
+            self.assertEqual(self._bundle_stray(root).read_text(encoding="utf-8"), "# older bundle\n")
+
+    def _bundle_stray(self, root: Path) -> Path:
+        return root / ".hermes" / "plugins" / "omh" / "stray_from_an_older_version.py"
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class UltraperfInstalledAwarenessTests(unittest.TestCase):
+    """The copied plugin bundle routes ultraperf discovery prompts on its own."""
+
+    def test_ultraperf_route_hint_parity_in_installed_bundle(self) -> None:
+        from omh.plugin_bundle.omh.awareness import awareness_route_hint
+
+        for message in (
+            "find the performance bottleneck in the checkout path",
+            "\uc131\ub2a5 \ubcd1\ubaa9\uc774 \uc5b4\ub514\uc778\uc9c0 \ucc3e\uc544\uc918",
+        ):
+            with self.subTest(message=message):
+                hint = awareness_route_hint(message)
+                # The bundle emits the identifier the installed skill answers
+                # to; `ultraperf` stays the internal catalog key (#1249).
+                self.assertEqual(hint["primary_workflow"], "ulw-perf")
+
+    def test_ultraperf_display_pair_resolves_in_installed_bundle(self) -> None:
+        from omh.plugin_bundle.omh.awareness import awareness_route_hint
+
+        # The display label round-trips: accepted as input, emitted unchanged.
+        hint = awareness_route_hint("run ulw-perf on the api and worker")
+        self.assertEqual(hint["primary_workflow"], "ulw-perf")
+
+
+class HermesProfileSyncTests(unittest.TestCase):
+    """Bot profiles are independent Hermes homes under <hermes_home>/profiles.
+
+    A registration written only to the primary home is why Desktop bot chats
+    reported zero OMH skills while the default chat had the full set: each
+    profile has its own config.yaml, skills resolution, and plugin dir.
+    Setup and update apply the same managed per-home pair to every profile,
+    and the primary home's deliberate-unregistration rule carries over per
+    profile.
+    """
+
+    def _base(self, root: Path) -> list[str]:
+        return ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+
+    def _profile(self, root: Path, name: str) -> Path:
+        profile = root / ".hermes" / "profiles" / name
+        profile.mkdir(parents=True, exist_ok=True)
+        return profile
+
+    @contextmanager
+    def _managed_install(self, current: Path):
+        """What a managed command install looks like to the setup module.
+
+        Only the probes a test process cannot answer truthfully are stubbed
+        -- the generation pointer, the managed-runtime verdict, and the
+        generation the running interpreter lives in -- so
+        `_registered_workflow_dir` and the candidate list run for real. The
+        third stub matters: on a real managed install `resolve_paths`
+        redirects `paths.skills_dir` to the running generation's pack, so a
+        helper that leaves it at `<omh_home>/skills` models an unmanaged
+        interpreter and lets a candidate list that forgets the pre-pointer
+        home pass (the first fix did exactly that). The self-update plan is
+        pinned off because a managed runtime is exactly what would otherwise
+        send `omh update` into the staged command package transaction, which
+        is not what these tests exercise.
+        """
+        with (
+            mock.patch.object(
+                _setup_module, "managed_current_workflow_pack_dir", return_value=current
+            ),
+            mock.patch.object(
+                sys.modules[resolve_paths.__module__],
+                "managed_workflow_pack_dir",
+                return_value=current,
+            ),
+            mock.patch.object(
+                _setup_module,
+                "_managed_command_runtime",
+                return_value={
+                    "managed": True,
+                    "reason": "",
+                    "python": sys.executable,
+                    "venv_dir": str(current.parent),
+                },
+            ),
+            mock.patch.object(
+                _setup_module,
+                "_command_package_self_update_plan",
+                return_value={"should_update": False, "reason": "test fixture"},
+            ),
+        ):
+            yield
+
+    def test_setup_registers_every_bot_profile(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._profile(root, "politehelper")
+            self._profile(root, "insiderscout")
+            status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual((status, stderr), (0, ""))
+            payload = json.loads(stdout)
+            rows = {entry["profile"]: entry["status"] for entry in payload["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "bootstrapped", "insiderscout": "bootstrapped"})
+            # .resolve() matches what registration writes (Windows expands
+            # 8.3 short temp paths); same pattern as the primary-home tests.
+            skills_dir = (root / ".omh" / "skills").resolve().as_posix()
+            for name in ("politehelper", "insiderscout"):
+                profile = root / ".hermes" / "profiles" / name
+                self.assertTrue((profile / "plugins" / "omh").is_dir(), name)
+                self.assertIn(skills_dir, (profile / "config.yaml").read_text(encoding="utf-8"), name)
+
+    def test_update_bootstraps_a_bot_created_after_setup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_cli(self._base(root) + ["setup"])
+            profile = self._profile(root, "bluntcritic")
+            status, _, stderr = run_cli(self._base(root) + ["update"])
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue((profile / "plugins" / "omh").is_dir())
+            self.assertIn(
+                (root / ".omh" / "skills").resolve().as_posix(),
+                (profile / "config.yaml").read_text(encoding="utf-8"),
+            )
+
+    def test_update_with_active_primary_preserves_profile_display_choice(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "bluntcritic")
+            config = profile / "config.yaml"
+            config.write_text("display:\n  interface: cli\n  skin: default\n", encoding="utf-8")
+            status, _, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual(status, 0, stderr)
+
+            status, _, stderr = run_cli(
+                self._base(root) + ["update", "--interactive"],
+                output_json=False,
+            )
+
+            self.assertEqual(status, 0, stderr)
+            config_text = config.read_text(encoding="utf-8")
+            self.assertIn("  interface: cli\n", config_text)
+            self.assertIn("  skin: default\n", config_text)
+
+    def test_a_deliberately_unregistered_profile_stays_unregistered(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._profile(root, "politehelper")
+            run_cli(self._base(root) + ["setup"])
+            profile = root / ".hermes" / "profiles" / "politehelper"
+            # The documented per-profile opt-out: registration removed, plugin
+            # directory kept. Neither setup nor update may put it back.
+            status, _, stderr = run_cli(
+                ["--omh-home", str(root / ".omh"), "--hermes-home", str(profile), "uninstall", "--registration-only"]
+            )
+            self.assertEqual(status, 0, stderr)
+            config_before = (profile / "config.yaml").read_text(encoding="utf-8")
+            self.assertNotIn((root / ".omh" / "skills").resolve().as_posix(), config_before)
+            status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual((status, stderr), (0, ""))
+            payload = json.loads(stdout)
+            rows = {entry["profile"]: entry["status"] for entry in payload["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "unregistered_kept"})
+            self.assertEqual((profile / "config.yaml").read_text(encoding="utf-8"), config_before)
+
+    def test_a_profile_registered_at_the_other_managed_dir_is_refreshed(self) -> None:
+        # A managed command install registers the shared generation pointer;
+        # a home registered before that move names the OMH home's own skills
+        # directory. Both are OMH-owned, so a profile carrying the older of
+        # the two is registered — reading it as the deliberate opt-out is
+        # what froze one real profile's plugin bundle at the generation it
+        # was installed at, update after update.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            # The profile stays registered at ~/.omh/skills while the
+            # command install moves on to a generation pointer.
+            self.assertIn(
+                (root / ".omh" / "skills").resolve().as_posix(),
+                (profile / "config.yaml").read_text(encoding="utf-8"),
+            )
+            # What an install from before the display release left there:
+            # the per-profile pass is what takes it out.
+            brand_legacy_home(root / ".omh", profile / "config.yaml")
+            widget = profile / "tui-widgets" / "omh-status.mjs"
+            self.assertTrue(widget.is_file())
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(
+                    self._base(root) + ["update"], output_json=False
+                )
+
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (refreshed)", stdout)
+            # Refreshed means artifacts, not just a label.
+            self.assertFalse(widget.exists())
+            self.assertNotIn("display:", (profile / "config.yaml").read_text(encoding="utf-8"))
+
+    def test_update_migrates_a_profile_off_the_pre_pointer_path(self) -> None:
+        # Carrying a pre-pointer profile forward used to ADD the generation
+        # pointer beside `<omh_home>/skills` and leave both registered.
+        # Hermes refuses a bare skill name that resolves to two different
+        # files, so after every refresh every OMH skill present in both
+        # directories failed to load by name in that profile (#1857). The
+        # registration is migrated in the same config write: exactly one
+        # managed path afterwards, and the update says the move happened.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            self.assertIn(old_path, (profile / "config.yaml").read_text(encoding="utf-8"))
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stderr)
+            config_after = (profile / "config.yaml").read_text(encoding="utf-8")
+            self.assertNotIn(old_path, config_after)
+            self.assertIn(generation.as_posix(), config_after)
+            self.assertEqual(
+                [entry for entry in external_dirs(config_after) if entry in {old_path, generation.as_posix()}],
+                [generation.as_posix()],
+            )
+            self.assertIn(
+                f"Bot profile politehelper: registration migrated from {old_path} to {generation.as_posix()}.",
+                stdout,
+            )
+            # The post-check re-reads the file and finds nothing to name.
+            self.assertNotIn("OMH-managed skills directories", stdout)
+
+    def test_setup_rows_report_the_migration_for_the_profile_and_the_primary(self) -> None:
+        # The JSON shape of the same move: the primary's apply step and each
+        # profile row carry `registration` and the entries retired, so a
+        # wrapper can tell a migration from a plain refresh.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+
+            self.assertEqual((status, stderr), (0, ""))
+            payload = json.loads(stdout)
+            apply = payload["steps"]["apply"]
+            self.assertEqual(apply["registration"], "migrated")
+            self.assertEqual(apply["retired_external_dirs"], [old_path])
+            self.assertEqual(apply["registered_dir"], generation.as_posix())
+            row = payload["hermes_profiles"][0]
+            self.assertEqual(row["profile"], "politehelper")
+            self.assertEqual(row["status"], "refreshed")
+            self.assertEqual(row["registration"], "migrated")
+            self.assertEqual(row["retired_external_dirs"], [old_path])
+            self.assertEqual(row["registered_dir"], generation.as_posix())
+
+            # Idempotent: the second pass finds one managed path and moves nothing.
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["steps"]["apply"]["registration"], "unchanged")
+            self.assertEqual(payload["hermes_profiles"][0]["registration"], "unchanged")
+
+    def test_update_migrates_the_primary_home_off_the_pre_pointer_path(self) -> None:
+        # The primary home takes the same path through `_apply_result`, so a
+        # primary registered before the pointer existed ends on the pointer
+        # alone, and the update prints the move for it too.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            hermes_config = root / ".hermes" / "config.yaml"
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            self.assertIn(old_path, hermes_config.read_text(encoding="utf-8"))
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stderr)
+            config_after = hermes_config.read_text(encoding="utf-8")
+            self.assertNotIn(old_path, config_after)
+            self.assertIn(generation.as_posix(), config_after)
+            self.assertIn(
+                f"Hermes registration migrated from {old_path} to {generation.as_posix()}.",
+                stdout,
+            )
+
+    def test_a_deliberately_unregistered_profile_is_not_migrated_onto_the_pointer(self) -> None:
+        # The opt-out rule survives the migration: a profile naming NO
+        # managed directory is left as it is, so the move never re-registers
+        # a home that chose to be unregistered.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            status, _, stderr = run_cli(
+                ["--omh-home", str(root / ".omh"), "--hermes-home", str(profile), "uninstall", "--registration-only"]
+            )
+            self.assertEqual(status, 0, stderr)
+            config_before = (profile / "config.yaml").read_text(encoding="utf-8")
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (left unregistered)", stdout)
+            # The primary home in this fixture was registered at the
+            # pre-pointer path and moves; the opted-out profile does not.
+            self.assertIn("Hermes registration migrated from", stdout)
+            self.assertNotIn("Bot profile politehelper: registration migrated", stdout)
+            self.assertEqual((profile / "config.yaml").read_text(encoding="utf-8"), config_before)
+            self.assertNotIn(generation.as_posix(), config_before)
+
+    def test_the_migration_keeps_a_directory_the_person_registered(self) -> None:
+        # Only OMH-managed candidates are retired. A foreign external dir the
+        # person added stays where it is, in its place, whichever side of the
+        # managed entries it was written on.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            own_dir = (root / "my-skills").resolve().as_posix()
+            config = profile / "config.yaml"
+            config.write_text(
+                config.read_text(encoding="utf-8").replace(
+                    f"    - {old_path}\n", f"    - {own_dir}\n    - {old_path}\n"
+                ),
+                encoding="utf-8",
+                newline="",
+            )
+            self.assertEqual(external_dirs(config.read_text(encoding="utf-8")), [own_dir, old_path])
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, _, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(
+                external_dirs(config.read_text(encoding="utf-8")),
+                [own_dir, generation.as_posix()],
+            )
+
+    @requires_symlinks
+    def test_an_older_entry_spelled_through_a_link_is_retired_too(self) -> None:
+        # Retirement matches by real path, the way Hermes resolves entries
+        # and the way the ambiguity reader counts them. An older entry
+        # spelled through a symlink is the same directory, so it is retired
+        # and the post-check has nothing to name -- otherwise doctor would
+        # send the person to an `omh update` that could never clear it.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            link = root / "store-link"
+            link.symlink_to((root / ".omh").resolve(), target_is_directory=True)
+            linked_path = (link / "skills").as_posix()
+            config = profile / "config.yaml"
+            config.write_text(
+                config.read_text(encoding="utf-8").replace(f"    - {old_path}\n", f"    - {linked_path}\n"),
+                encoding="utf-8",
+                newline="",
+            )
+            generation = root / "generation" / "skills"
+            generation.mkdir(parents=True)
+
+            with self._managed_install(generation):
+                status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(external_dirs(config.read_text(encoding="utf-8")), [generation.as_posix()])
+            self.assertIn(
+                f"Bot profile politehelper: registration migrated from {linked_path} to {generation.as_posix()}.",
+                stdout,
+            )
+            self.assertNotIn("OMH-managed skills directories", stdout)
+
+    def test_an_unmanaged_command_never_retires_the_generation_pointer(self) -> None:
+        # From a checkout or a pip/uv tool install `_registered_workflow_dir`
+        # is `<omh_home>/skills` while the pointer is still a candidate, so
+        # "retire every other candidate" would unregister the pointer and
+        # move the machine backwards. Such a command keeps the additive
+        # registration it always had: the pointer survives, nothing is
+        # printed as migrated.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            own_path = (root / ".omh" / "skills").resolve().as_posix()
+            pointer = root / "current" / "skills"
+            pointer.mkdir(parents=True)
+            config = profile / "config.yaml"
+            config.write_text(
+                config.read_text(encoding="utf-8").replace(f"    - {own_path}\n", f"    - {pointer.as_posix()}\n"),
+                encoding="utf-8",
+                newline="",
+            )
+            self.assertEqual(external_dirs(config.read_text(encoding="utf-8")), [pointer.as_posix()])
+
+            # Only the pointer is stubbed; the managed-runtime verdict stays
+            # the test process's own, which is not the installer's venv.
+            with mock.patch.object(_setup_module, "managed_current_workflow_pack_dir", return_value=pointer):
+                self.assertFalse(_setup_module._managed_command_runtime()["managed"])
+                status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(external_dirs(config.read_text(encoding="utf-8")), [pointer.as_posix(), own_path])
+            self.assertNotIn("registration migrated", stdout)
+
+    def test_opting_out_removes_a_registration_at_the_older_managed_dir(self) -> None:
+        # Reading "registered" across both managed paths only works if
+        # removal reads the same set. Removing today's path alone left the
+        # older entry in place, so the opt-out never took: the profile kept
+        # its plugin directory AND a live registration, and the next update
+        # refreshed it again. This is the miku shape — the one install this
+        # whole change targets — so the opt-out has to be reachable on it.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            self.assertIn(old_path, (profile / "config.yaml").read_text(encoding="utf-8"))
+            current = root / "generation" / "skills"
+            current.mkdir(parents=True)
+
+            with self._managed_install(current):
+                status, _, stderr = run_cli(
+                    [
+                        "--omh-home",
+                        str(root / ".omh"),
+                        "--hermes-home",
+                        str(profile),
+                        "uninstall",
+                        "--registration-only",
+                    ]
+                )
+                self.assertEqual(status, 0, stderr)
+                config_after = (profile / "config.yaml").read_text(encoding="utf-8")
+                self.assertNotIn(old_path, config_after)
+                self.assertNotIn(current.as_posix(), config_after)
+                # The plugin directory stays: that plus no registration is
+                # the documented opt-out marker the sync must now respect.
+                self.assertTrue((profile / "plugins" / "omh").is_dir())
+
+                status, stdout, stderr = run_cli(
+                    self._base(root) + ["update"], output_json=False
+                )
+
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (left unregistered)", stdout)
+
+    def _profile_naming_its_own_store(self, root: Path, name: str) -> tuple[Path, Path]:
+        """A profile whose config.yaml selects its own OMH store, before setup."""
+        profile = self._profile(root, name)
+        store = profile / "omh"
+        (profile / "config.yaml").write_text(
+            f"plugins:\n  entries:\n    omh:\n      settings:\n        omh_home: {store.as_posix()}\n",
+            encoding="utf-8",
+        )
+        return profile, store
+
+    def test_a_profile_that_names_its_own_store_is_synced_from_the_primary_store(self) -> None:
+        # A profile may select its own OMH store (`plugins.entries.omh.
+        # settings.omh_home`), and the resolver reads that setting for a bare
+        # `--hermes-home <profile>` too (#1679). The sync is not such a
+        # caller: the managed skills, widget and skin every profile shares
+        # come from the primary's store, so the registration it writes and
+        # the candidates it scores stay the primary's, and nothing is
+        # created under the profile's own store.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile, store = self._profile_naming_its_own_store(root, "politehelper")
+            status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual((status, stderr), (0, ""))
+            rows = {entry["profile"]: entry["status"] for entry in json.loads(stdout)["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "bootstrapped"})
+            config_text = (profile / "config.yaml").read_text(encoding="utf-8")
+            self.assertIn((root / ".omh" / "skills").resolve().as_posix(), config_text)
+            self.assertNotIn((store / "skills").as_posix(), config_text)
+            self.assertFalse((store / "skills").exists())
+            # The setting survives registration, and the next update still
+            # scores the profile as registered rather than opted out.
+            self.assertIn(store.as_posix(), config_text)
+            status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (refreshed)", stdout)
+
+    def test_a_bare_setup_on_the_primary_still_registers_profiles_at_the_primary_store(self) -> None:
+        # Every other case here names the store with `--omh-home`, which pins
+        # the per-profile pair by argv alone. A live `omh update` names
+        # nothing, so this is the shape that exercises `_profile_clone`:
+        # without it, the profile's own setting would resolve and the sync
+        # would register `<profile>/omh/skills`, a directory it never creates.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile, store = self._profile_naming_its_own_store(root, "politehelper")
+            with mock.patch.dict(os.environ, {"HOME": str(root), "USERPROFILE": str(root)}):
+                os.environ.pop("OMH_HOME", None)
+                status, _, stderr = run_cli(["--hermes-home", str(root / ".hermes"), "setup"])
+            self.assertEqual(status, 0, stderr)
+            config_text = (profile / "config.yaml").read_text(encoding="utf-8")
+            self.assertIn((root / ".omh" / "skills").resolve().as_posix(), config_text)
+            self.assertNotIn((store / "skills").as_posix(), config_text)
+            self.assertFalse((store / "skills").exists())
+
+    def test_opting_out_a_profile_that_names_its_own_store_without_naming_the_primary(self) -> None:
+        # The documented opt-out names only the profile home. With the
+        # profile's own store now resolved from its setting, the registration
+        # the sync wrote at the primary's store is still the one to remove;
+        # the candidate list names the standalone default for exactly this.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile, _store = self._profile_naming_its_own_store(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            self.assertIn(old_path, (profile / "config.yaml").read_text(encoding="utf-8"))
+            with mock.patch.dict(os.environ, {"HOME": str(root), "USERPROFILE": str(root)}):
+                os.environ.pop("OMH_HOME", None)
+                status, _, stderr = run_cli(["--hermes-home", str(profile), "uninstall", "--registration-only"])
+            self.assertEqual(status, 0, stderr)
+            config_after = (profile / "config.yaml").read_text(encoding="utf-8")
+            self.assertNotIn(old_path, config_after)
+            self.assertTrue((profile / "plugins" / "omh").is_dir())
+            status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (left unregistered)", stdout)
+
+    def test_opting_out_removes_a_registration_at_the_current_managed_dir(self) -> None:
+        # The mirror case: a home registered only at the generation pointer,
+        # with the older path absent, opts out identically.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            current = root / "generation" / "skills"
+            current.mkdir(parents=True)
+
+            with self._managed_install(current):
+                status, _, stderr = run_cli(self._base(root) + ["setup"])
+                self.assertEqual(status, 0, stderr)
+                config = (profile / "config.yaml").read_text(encoding="utf-8")
+                self.assertIn(current.as_posix(), config)
+                self.assertNotIn((root / ".omh" / "skills").resolve().as_posix(), config)
+
+                status, _, stderr = run_cli(
+                    [
+                        "--omh-home",
+                        str(root / ".omh"),
+                        "--hermes-home",
+                        str(profile),
+                        "uninstall",
+                        "--registration-only",
+                    ]
+                )
+                self.assertEqual(status, 0, stderr)
+                self.assertNotIn(
+                    current.as_posix(), (profile / "config.yaml").read_text(encoding="utf-8")
+                )
+
+                status, stdout, stderr = run_cli(
+                    self._base(root) + ["update"], output_json=False
+                )
+
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (left unregistered)", stdout)
+
+    def test_the_primary_home_opts_out_from_the_older_managed_dir_too(self) -> None:
+        # `cmd_uninstall` removes the primary home's own registration on the
+        # same path set, so an old-path primary home is not left registered
+        # and silently re-refreshed by the next update.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual(status, 0, stderr)
+            hermes_config = root / ".hermes" / "config.yaml"
+            old_path = (root / ".omh" / "skills").resolve().as_posix()
+            self.assertIn(old_path, hermes_config.read_text(encoding="utf-8"))
+            current = root / "generation" / "skills"
+            current.mkdir(parents=True)
+
+            with self._managed_install(current):
+                status, _, stderr = run_cli(
+                    self._base(root) + ["uninstall", "--registration-only"]
+                )
+
+            self.assertEqual(status, 0, stderr)
+            self.assertNotIn(old_path, hermes_config.read_text(encoding="utf-8"))
+
+    def test_a_dry_run_setup_writes_nothing_into_profiles(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup", "--dry-run"])
+            self.assertEqual(status, 0, stderr)
+            self.assertFalse((profile / "plugins").exists())
+            self.assertFalse((profile / "config.yaml").exists())
+
+    def test_update_prints_the_profiles_line_and_no_hermes_tui_verdict(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._profile(root, "politehelper")
+            run_cli(self._base(root) + ["setup"])
+            status, stdout, stderr = run_cli(self._base(root) + ["update"], output_json=False)
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Bot profiles: politehelper (refreshed)", stdout)
+            # The verdict judged whether bare `hermes` would show the OMH
+            # surface; it does not any more, so there is nothing to judge.
+            self.assertNotIn("OMH TUI:", stdout)
+
+    def test_a_home_without_profiles_reports_no_profile_rows(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual((status, stderr), (0, ""))
+            payload = json.loads(stdout)
+            self.assertNotIn("hermes_profiles", payload)
+
+class HermesProfileUninstallTests(unittest.TestCase):
+    """The reverse of the sync: uninstall must reach every bot-profile home.
+
+    A full uninstall that leaves profiles registered keeps their skills.external_dirs
+    rows pointing at a removed ~/.omh/skills -- harmless at runtime, but stale the next
+    sync that treats as deliberate. Registration-only uninstall keeps each plugin dir
+    on purpose: that is the opt-out marker the sync guard respects
+    """
+
+    def _base(self, root: Path) -> list[str]:
+        return ["--omh-home", str(root / ".omh"), "--hermes-home", str(root / ".hermes")]
+
+    def _profile(self, root: Path, name: str) -> Path:
+        profile = root / ".hermes" / "profiles" / name
+        profile.mkdir(parents=True, exist_ok=True)
+        return profile
+
+    def _skills_dir(self, root: Path) -> str:
+        # .resolve() matches what registration writes (Windows expands 8.3
+        # short temp paths); same pattern as the sync tests above.
+        return (root / ".omh" / "skills").resolve().as_posix()
+
+    def test_full_uninstall_clears_every_profile(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            polite = self._profile(root, "politehelper")
+            blunt = self._profile(root, "bluntcritic")
+            unrelated = polite / "tui-widgets" / "personal.mjs"
+            status, _, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual((status, stderr), (0, ""))
+            # What an install from before the display release left in each
+            # profile: uninstall still takes it out.
+            for profile in (polite, blunt):
+                seed_legacy_widget(profile)
+                seed_legacy_skins(profile)
+            unrelated.write_text("personal\n", encoding="utf-8")
+            status, stdout, stderr = run_cli(self._base(root) + ["uninstall", "--keep-command"])
+            self.assertEqual((status, stderr), (0, ""))
+            payload = json.loads(stdout)
+            rows = {entry["profile"]: entry["status"] for entry in payload["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "cleared", "bluntcritic": "cleared"})
+            for profile in (polite, blunt):
+                self.assertNotIn(self._skills_dir(root), (profile / "config.yaml").read_text(encoding="utf-8"))
+                self.assertFalse((profile / "plugins" / "omh").exists())
+                self.assertFalse((profile / "tui-widgets" / "omh-status.mjs").exists())
+                self.assertFalse((profile / "skins" / "omh.yaml").exists())
+                self.assertTrue(profile.is_dir())
+            self.assertTrue(unrelated.exists())
+
+    def test_dry_run_uninstall_leaves_profiles_untouched(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            polite = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual((status, stderr), (0, ""))
+            before = (polite / "config.yaml").read_text(encoding="utf-8")
+
+            status, stdout, stderr = run_cli(self._base(root) + ["uninstall", "--keep-command", "--dry-run", "--json"])
+            self.assertEqual((status, stderr), (0, ""))
+            rows = {entry["profile"]: entry["status"] for entry in json.loads(stdout)["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "cleared"})
+            self.assertEqual((polite / "config.yaml").read_text(encoding="utf-8"), before)
+            self.assertTrue((polite / "plugins" / "omh").is_dir())
+            self.assertIn(self._skills_dir(root), before)
+
+
+    def test_registration_only_leaves_plugin_dirs_as_deliberate_opt_out(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            polite = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual((status, stderr), (0, ""))
+
+            status, stdout, stderr = run_cli(self._base(root) + ["uninstall", "--registration-only"])
+            self.assertEqual((status, stderr), (0, ""))
+            rows = {entry["profile"]: entry["status"] for entry in json.loads(stdout)["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "unregistered"})
+            self.assertNotIn(self._skills_dir(root), (polite / "config.yaml").read_text(encoding="utf-8"))
+            self.assertTrue((polite / "plugins" / "omh").is_dir())
+
+            # The round-trip: plugin-dir-present plus unregistered is the
+            # documented opt-out, so the next sync must report it and keep it.
+            status, stdout, stderr = run_cli(self._base(root) + ["setup", "--json"], output_json=False)
+            self.assertEqual((status, stderr), (0, ""))
+            rows = {entry["profile"]: entry["status"] for entry in json.loads(stdout)["hermes_profiles"]}
+            self.assertEqual(rows, {"politehelper": "unregistered_kept"})
+
+    def test_uninstall_keeps_an_unmanaged_profile_plugin_dir_without_force(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            polite = self._profile(root, "politehelper")
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual((status, stderr), (0, ""))
+            plugin_dir = polite / "plugins" / "omh"
+            (plugin_dir / ".omh-plugin-manifest.json").unlink()
+
+            status, stdout, stderr = run_cli(self._base(root) + ["uninstall", "--keep-command"])
+            self.assertEqual((status, stderr), (0, ""))
+            payload = json.loads(stdout)
+            row = payload["hermes_profiles"][0]
+            self.assertEqual(row["status"], "cleared")
+            self.assertTrue(plugin_dir.is_dir())
+            kept_paths = [item["path"] for item in row["kept_paths"]]
+            # .resolve() matches what _collect_removal reports (macOS /var ->
+            # /private/var, Windows 8.3 short temp paths); same pattern as
+            # _skills_dir above.
+            self.assertIn(str(plugin_dir.resolve()), kept_paths)
+
+            status, _, stderr = run_cli(self._base(root) + ["setup", "--force"])
+            self.assertEqual((status, stderr), (0, ""))
+            status, stdout, stderr = run_cli(self._base(root) + ["uninstall", "--keep-command", "--force"])
+            self.assertEqual((status, stderr), (0, ""))
+            self.assertFalse(plugin_dir.exists())
+
+    def test_uninstall_without_profiles_reports_no_profile_rows(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            status, _, stderr = run_cli(self._base(root) + ["setup"])
+            self.assertEqual((status, stderr), (0, ""))
+
+            status, stdout, stderr = run_cli(self._base(root) + ["uninstall", "--keep-command"])
+            self.assertEqual((status, stderr), (0, ""))
+            self.assertNotIn("hermes_profiles", json.loads(stdout))

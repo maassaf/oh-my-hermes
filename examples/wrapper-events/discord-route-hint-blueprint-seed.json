@@ -1,0 +1,13 @@
+{
+  "id": "discord-route-hint-blueprint-seed-001",
+  "guild_id": "omh-demo-guild",
+  "message": {
+    "id": "discord-message-route-hint-blueprint-seed-001",
+    "channel": "ops-automation",
+    "content": "Set up the 'Morning briefing' automation for me (automation blueprint 'morning-brief'). A short daily briefing: today's calendar and anything urgent.\n\nAsk me for each of these, one at a time, offering the default in brackets if I don't have a preference:\n- What time? (time) [default: 08:00]\n\nOnce you have my answers, create the job by calling the cronjob tool with action='create'.",
+    "author": {
+      "id": "maintainer-1"
+    },
+    "timestamp": "2026-06-20T04:06:00Z"
+  }
+}

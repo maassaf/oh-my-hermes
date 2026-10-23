@@ -1,0 +1,195 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oh-my-hermes"
+version = "4.0.1"
+description = "Install a Hermes-native skill workflow pack."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "oh-my-hermes maintainers" }]
+dependencies = []
+keywords = ["hermes", "agent", "skills", "workflow", "automation"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  # Declared, not aspirational: the full test suite is an enforcing gate on
+  # windows-latest as well as ubuntu, and install.ps1 is the native installer.
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development",
+]
+
+[project.scripts]
+omh = "omh.cli:main"
+
+[project.urls]
+Homepage = "https://rlaope.github.io/oh-my-hermes/"
+Issues = "https://github.com/rlaope/oh-my-hermes/issues"
+Repository = "https://github.com/rlaope/oh-my-hermes"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+
+[tool.uv]
+config-settings = { editable_mode = "strict" }
+
+[tool.setuptools]
+packages = [
+  "omh",
+  "omh.capabilities",
+  "omh.catalogs",
+  "omh.cli",
+  "omh.codegraph",
+  "omh.coding",
+  "omh.coding.maestro",
+  "omh.commands",
+  "omh.conformance",
+  "omh.core",
+  "omh.evidence",
+  "omh.install",
+  "omh.maintenance",
+  "omh.mcp",
+  "omh.plugin_bundle",
+  "omh.plugin_bundle.omh",
+  "omh.plugin_bundle.omh.dashboard",
+  "omh.plugin_bundle.omh.hooks",
+  "omh.plugin_bundle.omh.references",
+  "omh.plugin_bundle.omh.tools",
+  "omh.skins",
+  "omh.tui",
+  "omh.tui.attach",
+  "omh.profiles",
+  "omh.quality",
+  "omh.routing",
+  "omh.routing.trigger_packs",
+  "omh.runtime",
+  "omh.skills",
+  "omh.surfaces",
+  "omh.system",
+  "omh.workflows",
+  "omh.wrapper",
+]
+
+[tool.setuptools.package-dir]
+"omh" = "src/omh"
+"omh.capabilities" = "src/capabilities"
+"omh.catalogs" = "src/catalogs"
+"omh.codegraph" = "src/codegraph"
+"omh.coding" = "src/coding"
+"omh.coding.maestro" = "src/coding/maestro"
+"omh.commands" = "src/commands"
+"omh.conformance" = "src/conformance"
+"omh.core" = "src/core"
+"omh.evidence" = "src/evidence"
+"omh.install" = "src/install"
+"omh.maintenance" = "src/maintenance"
+"omh.mcp" = "src/mcp"
+"omh.plugin_bundle" = "src/plugin_bundle"
+"omh.profiles" = "src/profiles"
+"omh.quality" = "src/quality"
+"omh.routing" = "src/routing"
+"omh.routing.trigger_packs" = "src/routing/trigger_packs"
+"omh.runtime" = "src/runtime"
+"omh.skills" = "src/skills"
+"omh.surfaces" = "src/surfaces"
+"omh.system" = "src/system"
+"omh.tui" = "src/tui"
+"omh.tui.attach" = "src/tui/attach"
+"omh.workflows" = "src/workflows"
+"omh.wrapper" = "src/wrapper"
+
+[tool.setuptools.package-data]
+# Closed optional companion data, not packages/imported production modules.
+"omh.skills" = [
+  "ai_job_search_toolkit/README.md", "ai_job_search_toolkit/scripts/job_state.py",
+  "ai_job_search_toolkit/examples/synthetic-captures.json", "ai_job_search_toolkit/LICENSE.upstream",
+  "ai_job_search_toolkit/upstream-manifest.json",
+  "geospatial_analysis_toolkit/README.md", "geospatial_analysis_toolkit/LICENSE.upstream",
+  "geospatial_analysis_toolkit/scripts/analyze.py", "geospatial_analysis_toolkit/examples/input.json",
+  "geospatial_analysis_toolkit/examples/overlay.json", "geospatial_analysis_toolkit/upstream-manifest.json",
+  "biomedical_evidence_toolkit/README.md", "biomedical_evidence_toolkit/scripts/reconcile.py",
+  "biomedical_evidence_toolkit/upstream-manifest.json",
+  "molecular_docking_toolkit/README.md", "molecular_docking_toolkit/NOTICE.md",
+  "molecular_docking_toolkit/scripts/dock.py", "molecular_docking_toolkit/examples/settings.json",
+  "molecular_docking_toolkit/upstream-manifest.json",
+  "show_reel_toolkit/README.md", "show_reel_toolkit/LICENSE.upstream", "show_reel_toolkit/upstream-manifest.json",
+  "show_reel_toolkit/assets/engine/engine.js", "show_reel_toolkit/assets/engine/fx.js", "show_reel_toolkit/assets/engine/scenes.js",
+  "show_reel_toolkit/assets/engine/index.html",
+  "show_reel_toolkit/scripts/new_project.py", "show_reel_toolkit/scripts/render.mjs", "show_reel_toolkit/scripts/font-coverage.mjs",
+  "show_reel_toolkit/scripts/timeline.py", "show_reel_toolkit/scripts/synth_music.py", "show_reel_toolkit/scripts/mix.py",
+  "show_reel_toolkit/scripts/motion_check.py", "show_reel_toolkit/scripts/qa_check.py",
+  "show_reel_toolkit/scripts/contact_sheet.py", "show_reel_toolkit/scripts/finish.py", "show_reel_toolkit/scripts/preflight.py",
+  "show_reel_toolkit/scripts/prep_images.py", "show_reel_toolkit/scripts/music_tools.py", "show_reel_toolkit/scripts/tools/cutout.swift",
+  "show_reel_toolkit/scripts/eleven.py", "show_reel_toolkit/scripts/narrate.py", "show_reel_toolkit/scripts/codex_ref_image.sh",
+  "show_reel_toolkit/assets/sfx_presets.json",
+  "show_reel_toolkit/examples/timing.json", "show_reel_toolkit/examples/music-spec.json", "show_reel_toolkit/examples/README.md",
+  "show_reel_craft/*.md",
+]
+"omh.skins" = ["*.yaml"]
+"omh.tui" = ["frontend/dist/*.js"]
+"omh.catalogs" = ["*.json"]
+"omh.routing.trigger_packs" = ["*.json"]
+"omh.plugin_bundle.omh" = ["plugin.yaml", "config.yaml", "desktop/*.js"]
+"omh.plugin_bundle.omh.dashboard" = ["manifest.json"]
+"omh.plugin_bundle.omh.references" = ["*.md"]
+"omh.plugin_bundle.omh.tools" = ["capability_families.json", "skill_shortlist.json"]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+lint = [
+    "ruff==0.17.1",
+]
+
+# Initial static-analysis baseline (issue #638). Scoped to Pyflakes (F) —
+# correctness signal (unused imports/vars, undefined names, shadowing) —
+# rather than the full pycodestyle/style surface, because this ~135k LOC
+# repo has no enforced line-length or import-order convention today and a
+# style-driven ruleset would demand a repo-wide reformat out of scope for a
+# baseline gate. Broaden the ruleset in follow-up work, not this issue.
+#
+# BLE001 (flake8-blind-except: bare `except Exception`) is deliberately NOT
+# selected here. Re-derive the current sites at any time with:
+#
+#     uv run --group lint ruff check --select BLE001 src
+#
+# A broad `except` is not itself the defect. Around a delegated call it is
+# acceptable when the failure is classified and surfaced, and it is a defect
+# when the failure is relabeled as a normal result — the mislabeling PR #641
+# (issue #637) removed from the `omh_context` and `omh_recommend` plugin
+# tools, which still catch broadly on purpose. Every current site carries that
+# verdict in `tests/test_broad_exception_policy.py`, which re-derives the site
+# list from source and fails when an unclassified one appears, so turning the
+# rule on later is bounded work rather than an open-ended audit. Policy owner:
+# issue #652.
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-export aggregator modules: these names are unused *within* the file
+# itself but are the public surface consumed elsewhere, either through a
+# `from <module> import *` shim (src/omh/*.py, architecture-locked by
+# tests/test_architecture_layout.py) or through direct named imports from
+# other modules (src/conformance/checker.py imports straight from
+# src/conformance/contract.py; src/commands/main.py imports command
+# functions by name from src/commands/coding.py).
+# `catalog.py` keeps the pre-split import surface: 30 modules and the test
+# suite import names from it that now live in `catalog_types` or upstream
+# modules. Re-exporting them here is what lets the catalog be split without
+# touching every caller.
+"src/skills/catalog.py" = ["F401"]
+"src/commands/main.py" = ["F401"]
+"src/commands/coding.py" = ["F401"]
+"src/runtime/artifacts.py" = ["F401"]
+"src/workflows/workflow_learning.py" = ["F401"]
+"src/conformance/contract.py" = ["F401"]
+"src/omh/dynamic_workflow.py" = ["F401"]

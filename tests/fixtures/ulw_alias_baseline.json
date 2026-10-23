@@ -1,0 +1,732 @@
+{
+ "captured": "retirement PR (#954 stage 5, window=0); pins the permanent post-retirement alias semantics",
+ "cues": {
+  "$ralph": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "$team": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "$ulg": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "$ulp": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "$ulr": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "$ultragoal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "$ultraprocess": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "./ultraprocess": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "/ultraprocess": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "PR까지": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "TDD로 구현": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "code-review sync docs and prepare a pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "codebase source research planning implementation review docs sync pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "codex implement": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "codex progress tracking": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "codex session tracking": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "codex로 구현": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "codex로 맡기": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "codex에게 맡기": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "coordinated workers": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "delegate to codex": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "delivery process": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "docs sync": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "durable goal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "end-to-end process": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "finish until done": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "goal ledger": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "keep working until acceptance criteria pass": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "long running goal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "make a pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "multi-goal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "omh-ralph": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "omh-team": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "omh-ultragoal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "omh-ultraprocess": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "one-cycle delivery": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "open a pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "parallel agents": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "persistent execution": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "plan implement review docs pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "pr-ready": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "prepare a pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ralph": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "ralplan ultragoal code-review": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "research plan implement review docs pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "self-referential loop": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "send to codex": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "single-cycle delivery": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "swarm": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "sync docs and prepare a pr": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "tdd implementation": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "team": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "test driven development": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "tests first": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulg": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulp": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulr": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "ultragoal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ultraprocess": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulw-goal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulw-process": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulw-ralph": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulw-team": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulw-ultragoal": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "ulw-ultraprocess": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "write tests first": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "계획 구현 리뷰 문서 PR": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "구현하게 맡기고 진행상태 추적": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "기획 구현 리뷰 문서 PR": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "끝까지 해줘": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "문서 최신화 PR": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "오래 실행": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "완료 조건까지 계속": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "완료조건까지 계속": {
+   "action_ids": [
+    "answer:clarify",
+    "cancel"
+   ],
+   "claim_boundary": "No plan or execution is approved.",
+   "selected_workflow": "ultrawork"
+  },
+  "장기 목표": {
+   "action_ids": [
+    "accept_plan",
+    "revise_plan"
+   ],
+   "claim_boundary": "A draft plan is not execution evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "진행 상태 추적": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "진행상태 추적": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "코덱스로 구현": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "코덱스에게 맡기": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "코드베이스 조사 웹리서치 계획 구현 리뷰 문서 최신화 PR": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status",
+    "state_goal_success_criteria"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "코딩 에이전트에게 맡기": {
+   "action_ids": [
+    "prepare_executor_runtime_readiness",
+    "choose_executor",
+    "show_status"
+   ],
+   "claim_boundary": "Runtime readiness is not executor dispatch, plugin load, tool invocation, execution, review, CI, or merge evidence.",
+   "selected_workflow": "executor-runtime-readiness"
+  },
+  "테스트 먼저 작성": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "테스트 우선 구현": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence. Prepared agentic playbook status remains prepared_not_observed; it is not execution, worker/subagent launch, implementation, review, CI, merge-readiness, or merge evidence.",
+   "selected_workflow": "ultrawork"
+  },
+  "테스트부터 작성": {
+   "action_ids": [
+    "choose_executor",
+    "prepare_agent_board_card",
+    "show_status"
+   ],
+   "claim_boundary": "Coding-agent choice is not dispatch or implementation evidence.",
+   "selected_workflow": "ultrawork"
+  }
+ },
+ "schema_version": "omh_ulw_alias_baseline/v1",
+ "source": "generic"
+}

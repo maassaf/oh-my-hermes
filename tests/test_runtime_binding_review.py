@@ -1,0 +1,559 @@
+"""Finite PR review regressions at the runtime ownership boundary."""
+import importlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import types
+import unittest
+from unittest.mock import Mock, patch
+
+from _local_package import load_local_package
+
+load_local_package()
+from omh.plugin_bundle.omh import runtime_paths as paths
+from omh.plugin_bundle.omh.hooks import llm_hooks, tool_hooks, session_hooks
+from _module_patch import patch_modules
+
+
+def native_modules(home, store, *, active=True, multiplex=False, scope_active=False):
+    def config(value):
+        return {"plugins": {"entries": {"omh": {"settings": {"omh_home": str(value)}}}}}
+    return {
+        "hermes_constants": types.SimpleNamespace(get_hermes_home=lambda: home,
+            get_hermes_home_override=lambda: str(home) if active else None),
+        "agent.secret_scope": types.SimpleNamespace(is_multiplex_active=lambda: multiplex,
+            current_secret_scope=lambda: {"OMH_HOME": str(store)} if scope_active else None,
+            get_secret=Mock(return_value=str(store)),
+            build_profile_secret_scope=lambda home: {"OMH_HOME": str(store)}),
+        "hermes_cli.config": types.SimpleNamespace(require_readable_config_before_write=Mock(return_value=config(store)),
+            load_config_readonly=Mock(return_value=config(store))),
+        "hermes_cli.managed_scope": types.SimpleNamespace(load_managed_config=lambda: {}),
+        "agent.runtime_cwd": types.SimpleNamespace(resolve_context_cwd=lambda: None, resolve_agent_cwd=Path.cwd),
+    }
+
+
+class RuntimeBindingReviewTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.home, self.store = self.root / 'profile', self.root / 'state'
+        self.enterContext(patch.dict(os.environ, {"HOME": str(self.root), "USERPROFILE": str(self.root),
+            "HERMES_HOME": str(self.home), "OMH_HOME": str(self.store)}))
+        self.enterContext(patch_modules({'hermes_constants': None}))
+
+    def test_colocated_imports_do_not_select_native_config_or_secrets(self):
+        modules = native_modules(self.home, self.root / 'native-state', active=False)
+        with patch_modules(modules):
+            self.assertEqual(paths.resolve_homes(), (self.store, self.home))
+            self.assertEqual(paths.expand_path('$OMH_HOME'), self.store)
+        modules['hermes_cli.config'].load_config_readonly.assert_not_called()
+        modules['agent.secret_scope'].get_secret.assert_not_called()
+
+    def test_active_host_missing_capabilities_is_bounded_before_config_io(self):
+        required = {
+            'hermes_constants': ['get_hermes_home', 'get_hermes_home_override'],
+            'agent.secret_scope': ['is_multiplex_active', 'current_secret_scope', 'get_secret', 'build_profile_secret_scope'],
+            'hermes_cli.config': ['require_readable_config_before_write', 'load_config_readonly'],
+            'hermes_cli.managed_scope': ['load_managed_config'],
+            'agent.runtime_cwd': ['resolve_context_cwd', 'resolve_agent_cwd'],
+        }
+        for module, names in required.items():
+            for name in [None, *names]:
+                with self.subTest(module=module, name=name):
+                    modules = native_modules(self.home, self.store)
+                    config = modules['hermes_cli.config']
+                    if name is None:
+                        modules[module] = None
+                    else:
+                        vars(modules[module])[name] = None
+                    # A wholly absent Hermes is the supported standalone lane.
+                    if module == 'hermes_constants' and name is None:
+                        continue
+                    with patch_modules(modules), self.assertRaises(paths.RuntimeBindingError) as caught:
+                        paths.resolve_homes()
+                    self.assertNotIn(str(self.root), str(caught.exception))
+                    if callable(config.load_config_readonly):
+                        config.load_config_readonly.assert_not_called()
+                    if callable(config.require_readable_config_before_write):
+                        config.require_readable_config_before_write.assert_not_called()
+
+    def test_missing_constants_does_not_downgrade_an_active_native_scope(self):
+        modules = native_modules(self.home, self.store, multiplex=True)
+        modules['hermes_constants'] = None
+        with patch_modules(modules), self.assertRaises(paths.RuntimeBindingError):
+            paths.resolve_homes()
+        with patch.object(paths, '_NATIVE_REGISTERED', True), self.assertRaises(paths.RuntimeBindingError):
+            paths.resolve_homes()
+
+    def test_unscoped_multiplexer_is_not_standalone(self):
+        modules = native_modules(self.home, self.store, active=False, multiplex=True)
+        with patch_modules(modules), self.assertRaises(paths.RuntimeBindingError):
+            paths.resolve_homes()
+        modules['hermes_cli.config'].load_config_readonly.assert_not_called()
+
+    def test_literal_active_config_disagreement_is_rejected(self):
+        modules = native_modules(self.home, self.store)
+        modules['hermes_cli.config'].load_config_readonly.return_value = {
+            'plugins': {'entries': {'omh': {'settings': {'omh_home': str(self.root / 'foreign')}}}}}
+        with patch_modules(modules), self.assertRaises(paths.RuntimeBindingError):
+            paths.resolve_homes()
+        self.assertFalse(self.store.exists())
+        self.assertFalse((self.root / 'foreign').exists())
+
+    def test_missing_winning_leaf_cannot_select_an_effective_foreign_home(self):
+        for missing in ('raw', 'effective'):
+            with self.subTest(missing=missing):
+                modules = native_modules(self.home, self.store)
+                config = modules['hermes_cli.config']
+                if missing == 'raw':
+                    config.require_readable_config_before_write.return_value = {}
+                else:
+                    config.load_config_readonly.return_value = {}
+                with patch_modules(modules), self.assertRaises(paths.RuntimeBindingError):
+                    paths.resolve_homes()
+
+    def test_filesystem_home_faults_are_typed_and_bounded(self):
+        for exc in (OSError('PRIVATE_PATH'), RuntimeError('PRIVATE_PATH')):
+            with self.subTest(error=type(exc).__name__), patch.object(Path, 'resolve', side_effect=exc):
+                for call in (lambda: paths.expand_path(self.home), paths.default_hermes_home, paths.resolve_homes):
+                    with self.assertRaises(paths.RuntimeBindingError) as caught:
+                        call()
+                    self.assertNotIn('PRIVATE_PATH', str(caught.exception))
+
+    def test_cwd_resolution_fault_is_a_bounded_binding_error(self):
+        modules = native_modules(self.home, self.store, multiplex=True)
+        modules['agent.runtime_cwd'].resolve_context_cwd = Mock(side_effect=RuntimeError('PRIVATE_PATH'))
+        for native in (False, True):
+            with self.subTest(native=native), patch_modules(modules if native else {'hermes_constants': None}), \
+                    patch.object(Path, 'cwd', side_effect=OSError('PRIVATE_PATH')):
+                with self.assertRaises(paths.RuntimeBindingError) as caught:
+                    paths.runtime_cwd()
+                self.assertNotIn('PRIVATE_PATH', str(caught.exception))
+
+    def test_binding_fault_precedes_hook_io_on_every_hook(self):
+        for module, name in ((llm_hooks, 'pre_llm_call'), (tool_hooks, 'pre_tool_call'),
+                             (tool_hooks, 'post_tool_call'), (session_hooks, 'on_session_end'),
+                             (session_hooks, 'on_session_start')):
+            for home_key in ('omh_home', 'hermes_home'):
+                with self.subTest(hook=name, home=home_key):
+                    def bind(value=None, *, hermes=False):
+                        if hermes == (home_key == 'hermes_home'):
+                            raise paths.RuntimeBindingError('PRIVATE_PATH')
+                        return self.home if hermes else self.store
+                    with patch.object(paths, 'plugin_home', side_effect=bind), \
+                            patch.object(module, 'observe_plugin_hook_call') as observer:
+                        result = getattr(module, name)(tool_name='read_file', host='host', session_id='s')
+                    observer.assert_not_called()
+                    self.assertTrue(result['omh_degradation']['degraded'])
+                    self.assertNotIn('PRIVATE_PATH', json.dumps(result))
+                    if name == 'pre_tool_call':
+                        # #1733: a refusal that named a store degrades too.
+                        # `pre_tool_call` no longer differs from the observer
+                        # hooks on the binding path.
+                        self.assertNotIn('action', result)
+
+    def test_every_binding_fault_degrades_the_pre_tool_hook(self):
+        # The veto's boundary after #1733: there is none. Every fault the
+        # binding guard catches degrades, including the refusals that named a
+        # store, because the case those protected -- a rules file that exists
+        # and cannot be read -- is itself allowed one level down
+        # (`toolcall_rules` is fail-open by contract, and #1732 rejected
+        # blocking on a rule-gate failure by name). Blocking the
+        # less-informed case while allowing the better-informed one is what
+        # this removes.
+        for error in (paths.RuntimeBindingError('PRIVATE_PATH'), OSError('PRIVATE_PATH'),
+                      RuntimeError('PRIVATE_PATH'), paths.UnattributableSessionError('PRIVATE_PATH')):
+            with self.subTest(error=type(error).__name__):
+                with patch.object(paths, 'plugin_home', side_effect=error), \
+                        patch.object(tool_hooks, 'observe_plugin_hook_call') as observer:
+                    result = tool_hooks.pre_tool_call(tool_name='read_file', session_id='s')
+                observer.assert_not_called()
+                self.assertNotIn('action', result)
+                self.assertNotIn('message', result)
+                self.assertNotIn('Tool call blocked', json.dumps(result))
+                self.assertTrue(result['omh_degradation']['degraded'])
+                self.assertNotIn('PRIVATE_PATH', json.dumps(result))
+                # The cause has to stay legible now that the two shapes are
+                # one shape: the type is what tells them apart, and the
+                # context line is the only part of this payload a host
+                # renders (#1674 observation 3).
+                self.assertIn(f'error_type={type(error).__name__}', result['context'])
+
+    def test_the_four_injected_binding_faults_each_degrade(self):
+        # The fault table from #1733, driven through the real binding path
+        # rather than a patched `plugin_home`, standalone lane. Each was
+        # measured returning `action: block` on `origin/main` at 20491cdf.
+        for label, omh_home, hermes_home in (
+            ('unresolvable variable in the configured home', '$OMH_NO_SUCH_VAR_1733/omh', str(self.home)),
+            ('blank home', '   ', str(self.home)),
+            ('NUL byte in the path', '/tmp/a\0b', str(self.home)),
+            ('bad Hermes home', str(self.store), '$OMH_NO_SUCH_VAR_1733/hermes'),
+        ):
+            with self.subTest(fault=label):
+                with patch.object(tool_hooks, 'observe_plugin_hook_call') as observer:
+                    result = tool_hooks.pre_tool_call(tool_name='read_file', session_id='s', args={},
+                                                      omh_home=omh_home, hermes_home=hermes_home)
+                observer.assert_not_called()
+                self.assertNotIn('action', result)
+                self.assertTrue(result['omh_degradation']['degraded'])
+                self.assertIn('error_type=RuntimeBindingError', result['context'])
+
+    def test_a_control_character_in_the_profile_config_no_longer_blocks_every_tool(self):
+        # The issue's headline, end to end in the native lane. The installed
+        # `hermes_cli.config.require_readable_config_before_write` raises
+        # `RuntimeError` on a config carrying a control character (measured
+        # against the host; reproduced here through the same API shape), and
+        # `_configured_home` converts that to a binding error on EVERY call
+        # while the byte is there. It used to take out every tool of every
+        # session in the home.
+        modules = native_modules(self.home, self.store)
+        modules['hermes_cli.config'].require_readable_config_before_write = Mock(
+            side_effect=RuntimeError('Your settings file (PRIVATE_PATH) has a formatting error.'))
+        with patch_modules(modules):
+            result = tool_hooks.pre_tool_call(tool_name='read_file', session_id='s', args={})
+        self.assertNotIn('action', result)
+        self.assertNotIn('Tool call blocked', json.dumps(result))
+        self.assertTrue(result['omh_degradation']['degraded'])
+        self.assertNotIn('PRIVATE_PATH', json.dumps(result))
+
+    def test_a_rules_file_that_loads_and_matches_still_blocks(self):
+        # The narrowing must not disarm the thing the veto was named for.
+        # When the store resolves, the file parses and a rule matches, the
+        # call is still vetoed -- by the rule, with the rule's own message.
+        rules = self.store / 'rules'
+        rules.mkdir(parents=True)
+        (rules / 'toolcall-rules.json').write_text(json.dumps({
+            'schema_version': 'omh_toolcall_rules/v1',
+            'rules': [{'name': 'no-read', 'pattern': '.', 'message': 'ask first', 'repeat': 'always'}]}),
+            encoding='utf-8')
+        result = tool_hooks.pre_tool_call(tool_name='read_file', session_id='s', args={'path': 'x'},
+                                          omh_home=str(self.store), hermes_home=str(self.home))
+        self.assertEqual(result['action'], 'block')
+        self.assertIn('no-read', result['message'])
+
+    def test_a_store_that_resolves_with_an_unreadable_rules_file_allows_the_call(self):
+        # The outcome #1733 proposed keeping the veto for, measured: it is
+        # already an allow, in every shape an unreadable rules file takes,
+        # and that is a decision the repo made deliberately. `toolcall_rules`
+        # catches `OSError` on both the stat and the read and returns no
+        # rules; #1732 added the gate handler for what it did not anticipate.
+        # Pinned so the veto cannot be argued back in on a premise the code
+        # does not hold.
+        from omh.plugin_bundle.omh.toolcall_rule_faults import read_toolcall_rule_faults
+        from omh.plugin_bundle.omh.toolcall_rules import MAX_RULES_FILE_BYTES
+        rules = self.store / 'rules'
+        rules.mkdir(parents=True)
+        path = rules / 'toolcall-rules.json'
+        good = json.dumps({'schema_version': 'omh_toolcall_rules/v1',
+                           'rules': [{'name': 'no-read', 'pattern': '.', 'message': 'ask first',
+                                      'repeat': 'always'}]})
+
+        def call():
+            return tool_hooks.pre_tool_call(tool_name='read_file', session_id='s', args={'path': 'x'},
+                                            omh_home=str(self.store), hermes_home=str(self.home))
+
+        path.write_text('not json at all ][', encoding='utf-8')
+        self.assertIsNone(call(), 'a malformed rules file allows')
+        # A directory in the file's place: the stat succeeds and the read is
+        # the `OSError`. It is the shape a reader is most likely to assume
+        # blocks, which is why it is pinned rather than left to the loader.
+        path.unlink()
+        path.mkdir()
+        self.assertIsNone(call(), 'a directory where the rules file should be allows')
+        path.rmdir()
+        # Oversized is its own branch, refused on the stat before a byte is
+        # read, so it never reaches the parse the malformed case exercises.
+        path.write_text(json.dumps({'schema_version': 'omh_toolcall_rules/v1', 'rules': [],
+                                    'pad': 'x' * (MAX_RULES_FILE_BYTES + 1)}), encoding='utf-8')
+        self.assertGreater(path.stat().st_size, MAX_RULES_FILE_BYTES)
+        self.assertIsNone(call(), 'an oversized rules file allows')
+        path.write_text(good, encoding='utf-8')
+        with patch.object(tool_hooks, 'toolcall_rule_directive', side_effect=ValueError('unanticipated')):
+            self.assertIsNone(call(), 'an unanticipated gate failure allows')
+        self.assertEqual(read_toolcall_rule_faults(str(self.store))['last_error_type'], 'ValueError')
+        # Last, because it is the one shape a platform can refuse to produce.
+        try:
+            path.chmod(0o000)
+            # Read the mode's effect while it is in force: checking after the
+            # restore below always reports the file as readable, which turned
+            # this assertion into a permanent skip.
+            enforced = not os.access(path, os.R_OK)
+            unreadable = call()
+        finally:
+            path.chmod(0o600)
+        if not enforced:  # root, or a filesystem ignoring the mode
+            self.skipTest('cannot make a file unreadable here')
+        self.assertIsNone(unreadable, 'a permission-denied rules file allows')
+
+    def test_unowned_session_is_its_own_binding_fault(self):
+        # The refusal that names no store at all is the one a caller must be
+        # able to tell apart, so it carries its own type. Both entry points
+        # raise it; `resolve_homes` re-checks what `default_hermes_home`
+        # already refused, so each is driven on its own.
+        modules = native_modules(self.home, self.store, active=False, multiplex=True)
+        with patch_modules(modules):
+            for call in (paths.resolve_homes, paths.default_hermes_home):
+                with self.subTest(call=call.__name__):
+                    with self.assertRaises(paths.UnattributableSessionError):
+                        call()
+        self.assertTrue(issubclass(paths.UnattributableSessionError, paths.RuntimeBindingError))
+        modules['hermes_cli.config'].load_config_readonly.assert_not_called()
+
+    def test_launch_profile_body_under_multiplex_keeps_the_launch_home(self):
+        # Hermes multiplexes one process over several profile homes, and the
+        # launch profile is a profile too: its bodies run under a bound secret
+        # scope with NO HERMES_HOME override, because the launch home IS
+        # `get_hermes_home()` (`tui_gateway/model_switch.py::
+        # _profile_runtime_scope_tokens` answers no override for "already the
+        # launch profile"). Reading "no override" alone as unowned refused
+        # every launch-profile turn in a backend that also hosts a second
+        # profile home: the desktop session showed a `runtime_status_read`
+        # degradation on every turn while the second profile's own sessions
+        # bound normally. "No override AND no bound scope" is the unattributed
+        # pair, which is the witness `_profile_variable` already reads.
+        for scope_active, expected in ((True, self.home), (False, None)):
+            with self.subTest(scope_active=scope_active):
+                modules = native_modules(self.home, self.store, active=False,
+                                         multiplex=True, scope_active=scope_active)
+                with patch_modules(modules):
+                    if expected is None:
+                        with self.assertRaises(paths.UnattributableSessionError):
+                            paths.default_hermes_home()
+                        with self.assertRaises(paths.UnattributableSessionError):
+                            paths.resolve_homes()
+                        continue
+                    self.assertEqual(paths.default_hermes_home(), expected)
+                    self.assertEqual(paths.resolve_homes(), (self.store, expected))
+
+    def test_named_store_that_fails_validation_is_not_an_unowned_session(self):
+        # A store the profile named and OMH then rejected is the shape where a
+        # rules file can exist unread, so it must NOT wear the unowned type.
+        # `pre_tool_call` no longer decides a veto on it (#1733), but the
+        # distinction is still what the degradation reports as the cause, and
+        # it is still what separates a misconfigured profile from a session
+        # the multiplexer left unattributed.
+        modules = native_modules(self.home, self.store)
+        modules['hermes_cli.config'].load_config_readonly.return_value = {
+            'plugins': {'entries': {'omh': {'settings': {'omh_home': str(self.root / 'foreign')}}}}}
+        with patch_modules(modules):
+            with self.assertRaises(paths.RuntimeBindingError) as caught:
+                paths.resolve_homes()
+        self.assertNotIsInstance(caught.exception, paths.UnattributableSessionError)
+
+    def test_unowned_session_degrades_every_hook_including_pre_tool(self):
+        # #1674: a multiplexed gateway's unowned session had every tool call
+        # vetoed. The rules this hook guards are opt-in by a file in the
+        # session's own store, and an unowned session has no store, so there
+        # is no rules file to leave unread -- the hook degrades exactly as the
+        # observer hooks already did.
+        for module, name in ((llm_hooks, 'pre_llm_call'), (tool_hooks, 'pre_tool_call'),
+                             (tool_hooks, 'post_tool_call'), (session_hooks, 'on_session_end'),
+                             (session_hooks, 'on_session_start')):
+            with self.subTest(hook=name):
+                with patch.object(paths, 'plugin_home',
+                                  side_effect=paths.UnattributableSessionError('PRIVATE_PATH')), \
+                        patch.object(module, 'observe_plugin_hook_call') as observer:
+                    result = getattr(module, name)(tool_name='read_file', host='host', session_id='s')
+                observer.assert_not_called()
+                self.assertTrue(result['omh_degradation']['degraded'])
+                self.assertNotIn('action', result)
+                self.assertNotIn('message', result)
+                self.assertNotIn('PRIVATE_PATH', json.dumps(result))
+
+    def test_gateway_unowned_session_reaches_no_veto(self):
+        # End to end for #1674, through the real binding path rather than a
+        # patched one: the multiplexed session with no home override is
+        # refused as unowned, and the hook returns a degradation the host
+        # discards instead of the block that ended the session.
+        modules = native_modules(self.home, self.store, active=False, multiplex=True)
+        with patch_modules(modules):
+            result = tool_hooks.pre_tool_call(tool_name='read_file', session_id='s', args={})
+        self.assertTrue(result['omh_degradation']['degraded'])
+        self.assertNotIn('action', result)
+        self.assertNotIn('Tool call blocked', json.dumps(result))
+
+    def test_tool_rule_failure_is_not_swallowed_by_binding_guard(self):
+        # The original claim stands: the binding guard's except tuple must not
+        # absorb a rule-gate failure into a binding degradation, because the
+        # two mean different things to the host. What #1732 changed is where
+        # the failure lands -- its own handler, which allows the call (the
+        # rules module's documented fail-open contract) and records the error
+        # where doctor reads it, instead of escaping to a host that logs one
+        # WARNING and then DEBUG only. So: no degradation payload, no block
+        # directive, and a fault carrying this exception's own text.
+        from omh.plugin_bundle.omh.toolcall_rule_faults import read_toolcall_rule_faults
+
+        with patch.object(tool_hooks, 'toolcall_rule_directive', side_effect=RuntimeError('rule failure')):
+            result = tool_hooks.pre_tool_call(tool_name='read_file')
+        self.assertIsNone(result)
+        record = read_toolcall_rule_faults(str(self.store))
+        self.assertEqual(record['fault_count'], 1)
+        self.assertEqual(record['last_tool'], 'read_file')
+        self.assertEqual(record['last_error_type'], 'RuntimeError')
+
+    def test_user_name_expansion_is_rejected_without_os_lookup(self):
+        for value in ('~root/file', '~some-user', '~another\\file'):
+            with self.subTest(value=value), patch.object(Path, 'expanduser', side_effect=AssertionError('OS lookup')):
+                with self.assertRaises(paths.RuntimeBindingError):
+                    paths.expand_input_path(value)
+        for value, expected in (('~/safe', self.root / 'safe'), (str(self.root / 'safe'), self.root / 'safe'),
+                                ('safe', Path.cwd() / 'safe')):
+            self.assertEqual(paths.expand_input_path(value), expected.resolve())
+
+    def test_evidence_child_binding_failure_is_json_and_never_spawns(self):
+        from omh.plugin_bundle.omh.tools import evidence_tool
+        for root in ('default_omh_home', 'default_hermes_home'):
+            with self.subTest(root=root), patch.object(paths, root, side_effect=paths.RuntimeBindingError('PRIVATE_PATH')), \
+                    patch.object(paths, 'runtime_cwd', return_value=self.root), \
+                    patch.object(evidence_tool.subprocess, 'run') as child:
+                result = json.loads(evidence_tool.omh_evidence_handler({
+                    'commands': ['git diff --check'], 'project_root': str(self.root)}))
+            child.assert_not_called()
+            self.assertIn('error', result)
+            self.assertNotIn('PRIVATE_PATH', json.dumps(result))
+
+    def test_native_model_home_overrides_are_rejected_before_observation(self):
+        tools = {'delegate_route': ('omh_delegate_route', {'action': 'status'}),
+                 'probe': ('omh_probe', {}), 'status': ('omh_status', {}), 'hud': ('omh_hud', {}),
+                 'todo': ('omh_todo', {'action': 'show'}), 'chat': ('omh_interact', {'message': 'hello'}),
+                 'run_summary': ('omh_run_summary', {}),
+                 'document_plan': ('omh_document_plan', {'action': 'show', 'plan_id': '0123456789ab'}),
+                 'route_answer': ('omh_route_answer', {'question_digest': '0' * 64,
+                                                       'answered_by': 'main_model',
+                                                       'route_choice': 'none'})}
+        with patch_modules(native_modules(self.home, self.store)):
+            for file, (name, args) in tools.items():
+                module = importlib.import_module('omh.plugin_bundle.omh.tools.' + file + '_tool')
+                for field in ('omh_home', 'hermes_home'):
+                    with self.subTest(tool=name, field=field), patch.object(module, 'observe_plugin_tool_call') as observer, \
+                            patch.object(paths, 'plugin_home', side_effect=AssertionError('home lookup before rejection')) as resolver:
+                        result = json.loads(getattr(module, name + '_handler')({**args, field: 'PRIVATE_PATH'}))
+                    resolver.assert_not_called()
+                    observer.assert_not_called()
+                    self.assertIn('error', result)
+                    self.assertNotIn('PRIVATE_PATH', json.dumps(result))
+        self.assertFalse(self.store.exists())
+
+    def test_project_artifact_routing_and_canonical_store_identity(self):
+        from omh.paths import resolve_paths, project_artifact_dir
+        project = self.root / 'project'
+        (project / '.git').mkdir(parents=True)
+        for native, routed in ((False, False), (True, False), (True, True)):
+            with self.subTest(native=native, routed=routed):
+                modules = native_modules(self.home, self.store, multiplex=routed) if native else {'hermes_constants': None}
+                with patch_modules(modules):
+                    selected = resolve_paths()
+                    self.assertEqual(selected.omh_home_named, routed)
+                    expected = self.store if routed else project / '.omh'
+                    self.assertEqual(project_artifact_dir(selected, 'goals', cwd=project), expected / 'goals')
+                    explicit = resolve_paths(self.store, self.home)
+                    self.assertTrue(explicit.omh_home_named)
+                    self.assertEqual(project_artifact_dir(explicit, 'goals', cwd=project), self.store / 'goals')
+                    with patch.object(paths, 'runtime_cwd', return_value=None):
+                        self.assertEqual(project_artifact_dir(selected, 'goals'), self.store / 'goals')
+        try:
+            (self.root / 'link').symlink_to(project, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f'symlink unavailable: {type(exc).__name__}')
+        link = self.root / 'link'
+        with patch.object(paths, 'runtime_cwd', return_value=link):
+            scoped = resolve_paths(scope='project')
+            self.assertEqual(scoped.omh_home, project / '.omh')
+            self.assertEqual(scoped.hermes_home, project / '.hermes')
+            from omh.paths import find_project_root
+            self.assertEqual(paths.runtime_cwd(), link)
+            self.assertEqual(find_project_root(), project)
+        self.assertEqual(paths.resolve_homes(link / '.omh', link / '.hermes'),
+                         (scoped.omh_home, scoped.hermes_home))
+
+    def test_explicit_blank_homes_fail_closed_in_both_scopes(self):
+        from omh.paths import resolve_paths
+        for scope in ('user', 'project'):
+            for field in ('omh_home', 'hermes_home'):
+                with self.subTest(scope=scope, field=field), self.assertRaises(paths.RuntimeBindingError):
+                    resolve_paths(**{field: ''}, scope=scope)
+
+    def test_standalone_observer_honors_explicit_homes_not_environment(self):
+        from omh.plugin_bundle.omh.host_observation import observe_plugin_tool_call
+        target = self.root / 'explicit'
+        result = observe_plugin_tool_call('omh_status', {'omh_home': str(target),
+            'hermes_home': str(self.home), 'observation': {'host': 'test-host', 'session_id': 's'}}, {})
+        self.assertEqual(result['status'], 'observed')
+        self.assertTrue(list((target / 'runtime').glob('*observations.jsonl')))
+        self.assertFalse(self.store.exists())
+
+    def test_native_observer_ignores_untrusted_home_metadata(self):
+        from omh.plugin_bundle.omh.host_observation import observe_plugin_tool_call
+        with patch_modules(native_modules(self.home, self.store)):
+            result = observe_plugin_tool_call('omh_status', {'omh_home': str(self.root / 'foreign'),
+                'observation': {'host': 'test-host', 'session_id': 's', 'omh_home': str(self.root / 'foreign')}}, {})
+        self.assertEqual(result['status'], 'observed')
+        self.assertTrue(self.store.exists())
+        self.assertFalse((self.root / 'foreign').exists())
+
+    def test_bundle_only_observer_honors_explicit_pair(self):
+        import builtins
+        from omh.plugin_bundle.omh.host_observation import observe_plugin_hook_call
+        real_import = builtins.__import__
+        def without_core(name, *args, **kwargs):
+            if name == 'omh.paths':
+                raise ModuleNotFoundError('core unavailable', name='omh.paths')
+            return real_import(name, *args, **kwargs)
+        target = self.root / 'bundle-explicit'
+        with patch('builtins.__import__', side_effect=without_core):
+            result = observe_plugin_hook_call('pre_llm_call', {'omh_home': str(target),
+                'hermes_home': str(self.home), 'host': 'test-host', 'session_id': 's'})
+        self.assertEqual(result['status'], 'observed')
+        self.assertTrue((target / 'runtime/plugin_host_observations.jsonl').is_file())
+        self.assertFalse(self.store.exists())
+
+    def test_native_home_schema_descriptions_state_the_refusal(self):
+        for name in ('chat', 'delegate_route', 'hud', 'probe', 'run_summary', 'status', 'todo'):
+            module = importlib.import_module('omh.plugin_bundle.omh.tools.' + name + '_tool')
+            for symbol, schema in vars(module).items():
+                if not symbol.startswith('OMH_') or not symbol.endswith('_SCHEMA'):
+                    continue
+                for field, value in schema['parameters']['properties'].items():
+                    if field in ('omh_home', 'hermes_home'):
+                        self.assertIn('Native Hermes calls reject', value['description'])
+
+    def test_memory_module_missing_symbols_is_optional_but_internal_faults_propagate(self):
+        name = 'omh.plugin_bundle.omh._memory_import_review'
+        original = importlib.import_module('omh.plugin_bundle.omh.memory_provider')
+        def load():
+            spec = importlib.util.spec_from_file_location(name, original.__file__)
+            module = importlib.util.module_from_spec(spec)
+            with patch_modules({name: module}):
+                spec.loader.exec_module(module)
+            return module
+        for module in (None, types.ModuleType('agent.memory_provider')):
+            with self.subTest(module=module), patch_modules({'agent.memory_provider': module}):
+                loaded = load()
+                self.assertEqual(loaded.OmhMemoryProvider.__bases__, (object,))
+                self.assertEqual(loaded.RecallStatus('OMH', 2).count, 2)
+        class NativeBase:
+            pass
+        class NativeRecall:
+            pass
+        for base, recall in ((NativeBase, None), (None, NativeRecall), (NativeBase, NativeRecall)):
+            module = types.ModuleType('agent.memory_provider')
+            if base is not None:
+                module.MemoryProvider = base
+            if recall is not None:
+                module.RecallStatus = recall
+            with patch_modules({'agent.memory_provider': module}):
+                loaded = load()
+                self.assertEqual(loaded.OmhMemoryProvider.__bases__, (base or object,))
+                if recall is not None:
+                    self.assertIs(loaded.RecallStatus, recall)
+        for failure in (ImportError('internal failure'), ModuleNotFoundError('internal failure', name='host_dependency')):
+            with patch.object(paths, 'import_module', side_effect=failure), self.assertRaises(type(failure)) as caught:
+                load()
+            self.assertIs(caught.exception, failure)
+        # The ordinary module and its class identities were never replaced.
+
+
+if __name__ == '__main__':
+    unittest.main()

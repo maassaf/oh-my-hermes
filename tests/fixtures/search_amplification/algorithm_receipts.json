@@ -1,0 +1,73 @@
+{
+  "schema_version": "search_benchmark_receipts/v1",
+  "receipts": [
+    {
+      "receipt_id": "SYNTHETIC-baseline-unavailable",
+      "pair_id": "SYNTHETIC-pair-unavailable",
+      "case_id": "sa-simple_web_lookup-01",
+      "arm": "baseline",
+      "observation_kind": "SYNTHETIC",
+      "corpus_digest": "5c1a275ced9e85a45738310d640de4f6987b59fb607fba46a8b3b0561d972971",
+      "input_digest": "6179e348708ca8be7dd637b4346b2e17f7f5dc0f78c78b092ef29ac9450ef478",
+      "conditions": {
+        "model_id": "SYNTHETIC-model",
+        "model_version": "fixture-v1",
+        "tool_versions": {
+          "SYNTHETIC-tool": "fixture-v1"
+        },
+        "environment_id": "SYNTHETIC-offline",
+        "scope_ref": "fixture-scope:python-tomllib",
+        "clock": "2026-10-23T00:00:00Z"
+      },
+      "arm_revision": "SYNTHETIC-baseline-v1",
+      "started_at": "2026-10-23T00:00:00Z",
+      "ended_at": "2026-10-23T00:00:00Z",
+      "trace_ref": "SYNTHETIC:no-provider-call",
+      "answer_ref": null,
+      "status": "unavailable",
+      "retrieved_evidence_ids": null,
+      "gold_evidence_ids": null,
+      "correct": null,
+      "grounding": null,
+      "manual_grounding": null,
+      "review": null,
+      "latency_ms": null,
+      "cost_usd": null,
+      "pricing_ref": null
+    },
+    {
+      "receipt_id": "SYNTHETIC-amplified-unavailable",
+      "pair_id": "SYNTHETIC-pair-unavailable",
+      "case_id": "sa-simple_web_lookup-01",
+      "arm": "amplified",
+      "observation_kind": "SYNTHETIC",
+      "corpus_digest": "5c1a275ced9e85a45738310d640de4f6987b59fb607fba46a8b3b0561d972971",
+      "input_digest": "6179e348708ca8be7dd637b4346b2e17f7f5dc0f78c78b092ef29ac9450ef478",
+      "conditions": {
+        "model_id": "SYNTHETIC-model",
+        "model_version": "fixture-v1",
+        "tool_versions": {
+          "SYNTHETIC-tool": "fixture-v1"
+        },
+        "environment_id": "SYNTHETIC-offline",
+        "scope_ref": "fixture-scope:python-tomllib",
+        "clock": "2026-10-23T00:00:00Z"
+      },
+      "arm_revision": "SYNTHETIC-amplified-v1",
+      "started_at": "2026-10-23T00:00:00Z",
+      "ended_at": "2026-10-23T00:00:00Z",
+      "trace_ref": "SYNTHETIC:no-provider-call",
+      "answer_ref": null,
+      "status": "unavailable",
+      "retrieved_evidence_ids": null,
+      "gold_evidence_ids": null,
+      "correct": null,
+      "grounding": null,
+      "manual_grounding": null,
+      "review": null,
+      "latency_ms": null,
+      "cost_usd": null,
+      "pricing_ref": null
+    }
+  ]
+}

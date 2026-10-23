@@ -1,0 +1,50 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+# Hermes' launcher requires the OMH TUI shim at <HERMES_TUI_DIR>/dist/entry.js.
+!src/tui/frontend/dist/
+*.egg-info/
+*.whl
+
+# Local agent/runtime artifacts. `.omh/` entries that were deliberately
+# committed (git mv'd proposals) stay tracked — gitignore only hides
+# untracked files — while everything new under these roots needs an explicit
+# `git add -f` decision.
+.hermes/
+.omh/
+.omc/
+.omo/
+.loop/
+
+# Local resolver artifacts
+uv.lock
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# QA/screenshot scratch artifacts
+.playwright-mcp/
+omh-qa-*.png
+omh-qa-*-snapshot.md
+*-1440.png

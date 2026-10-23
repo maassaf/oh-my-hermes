@@ -1,0 +1,344 @@
+[
+ {
+  "cols": 60,
+  "plan": "Parity plan",
+  "agent_rows": [
+   "  [global] DAG · 1 ready · 2 edges",
+   "  [+] unit0 · completed",
+   "  [R] unit1 · prepared_not_observed",
+   "  [!] unit2 · failed · blocked_by unit0 + unit1",
+   "⠋ [sub] worker0  Worker …  run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker …  done  · 31s     ·   2.4k tokens",
+   "· [bot] worker2  Worker …  ready ·         ·   3.6k tokens",
+   "⠋       worker3  Worker …  run   · 33s     ·   4.8k tokens",
+   "▲ [sub] worker4  Blocked…  block · 34s     ·   6.0k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Parity plan │ 5/13 (1 skipped) · 8 phases .",
+   "... (4 earlier tasks)",
+   "Phase 4",
+   "  [✓] Task number 4 with a fairly long description to t…",
+   "Phase 5",
+   "  [•] Task number 5 with a fairly long description to t…",
+   "Phase 6",
+   "  [ ] Task number 6 with a fairly long description to t…",
+   "Phase 7",
+   "  [ ] Task number 7 with a fa… (waiting: needs the own…)",
+   "  [ ] Task number 8 with a fairly long description to t…",
+   "  [ ] Task number 9 with a fairly long description to t…",
+   "  [ ] Task number 10 with a fairly long description to …",
+   "  [ ] Task number 11 with a fairly long description to …",
+   "... (1 later task)"
+  ]
+ },
+ {
+  "cols": 60,
+  "plan": "Small plan",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker …  run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker …  done  · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Small plan │ ✓ 2/3 (1 skipped)"
+  ]
+ },
+ {
+  "cols": 60,
+  "plan": "Esc\u001b[1m plan, person's",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker …  run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker …  done  · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Esc plan, person's │ 0/3 .",
+   "[•] Ship the red fix, it's ready?",
+   "[ ] Read the link then stop",
+   "[ ] cut"
+  ]
+ },
+ {
+  "cols": 80,
+  "plan": "Parity plan",
+  "agent_rows": [
+   "  [global] DAG · 1 ready · 2 edges",
+   "  [+] unit0 · completed",
+   "  [R] unit1 · prepared_not_observed",
+   "  [!] unit2 · failed · blocked_by unit0 + unit1",
+   "⠋ [sub] worker0  Worker 0 action               run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker 1 action               done  · 31s     ·   2.4k tokens",
+   "· [bot] worker2  Worker 2 action               ready ·         ·   3.6k tokens",
+   "⠋       worker3  Worker 3 action               run   · 33s     ·   4.8k tokens",
+   "▲ [sub] worker4  Blocked worker 한글 제목      block · 34s     ·   6.0k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Parity plan │ 5/13 (1 skipped) · 8 phases .",
+   "... (4 earlier tasks)",
+   "Phase 4",
+   "  [✓] Task number 4 with a fairly long description to truncate",
+   "Phase 5",
+   "  [•] Task number 5 with a fairly long description to truncate",
+   "Phase 6",
+   "  [ ] Task number 6 with a fairly long description to truncate",
+   "Phase 7",
+   "  [ ] Task number 7 with a fa… (waiting: needs the owner's call on the lay…)",
+   "  [ ] Task number 8 with a fairly long description to truncate",
+   "  [ ] Task number 9 with a fairly long description to truncate",
+   "  [ ] Task number 10 with a fairly long description to truncate",
+   "  [ ] Task number 11 with a fairly long description to truncate",
+   "... (1 later task)"
+  ]
+ },
+ {
+  "cols": 80,
+  "plan": "Small plan",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker 0 action               run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker 1 action               done  · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Small plan │ ✓ 2/3 (1 skipped)"
+  ]
+ },
+ {
+  "cols": 80,
+  "plan": "Esc\u001b[1m plan, person's",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker 0 action               run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker 1 action               done  · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Esc plan, person's │ 0/3 .",
+   "[•] Ship the red fix, it's ready?",
+   "[ ] Read the link then stop",
+   "[ ] cut"
+  ]
+ },
+ {
+  "cols": 99,
+  "plan": "Parity plan",
+  "agent_rows": [
+   "  [global] DAG · 1 ready · 2 edges",
+   "  [+] unit0 · completed",
+   "  [R] unit1 · prepared_not_observed",
+   "  [!] unit2 · failed · blocked_by unit0 + unit1",
+   "⠋ [sub] worker0  Worker …  ·  architect(claude-opus-5-5:high)     run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker …  ·  critic(gpt-6.1-sol:xhigh fallback)  done  · 31s     ·   2.4k tokens",
+   "· [bot] worker2  Worker …  ·  kanban/miku(kimi-k3:high)           ready ·         ·   3.6k tokens",
+   "⠋       worker3  Worker …  ·  (claude/maestro claude-fable-5-1)   run   · 33s     ·   4.8k tokens",
+   "▲ [sub] worker4  Blocked…  ·  inherit(claude-opus-5-5:high)       block · 34s     ·   6.0k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Parity plan │ 5/13 (1 skipped) · 8 phases .",
+   "... (4 earlier tasks)",
+   "Phase 4",
+   "  [✓] Task number 4 with a fairly long description to truncate",
+   "Phase 5",
+   "  [•] Task number 5 with a fairly long description to truncate",
+   "Phase 6",
+   "  [ ] Task number 6 with a fairly long description to truncate",
+   "Phase 7",
+   "  [ ] Task number 7 with a fairly … (waiting: needs the owner's call on the layout of the pan…)",
+   "  [ ] Task number 8 with a fairly long description to truncate",
+   "  [ ] Task number 9 with a fairly long description to truncate",
+   "  [ ] Task number 10 with a fairly long description to truncate",
+   "  [ ] Task number 11 with a fairly long description to truncate",
+   "... (1 later task)"
+  ]
+ },
+ {
+  "cols": 99,
+  "plan": "Small plan",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker …  ·  architect(claude-opus-5-5:high)     run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker …  ·  critic(gpt-6.1-sol:xhigh fallback)  done  · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Small plan │ ✓ 2/3 (1 skipped)"
+  ]
+ },
+ {
+  "cols": 99,
+  "plan": "Esc\u001b[1m plan, person's",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker …  ·  architect(claude-opus-5-5:high)     run   · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker …  ·  critic(gpt-6.1-sol:xhigh fallback)  done  · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Esc plan, person's │ 0/3 .",
+   "[•] Ship the red fix, it's ready?",
+   "[ ] Read the link then stop",
+   "[ ] cut"
+  ]
+ },
+ {
+  "cols": 100,
+  "plan": "Parity plan",
+  "agent_rows": [
+   "  [global] DAG · 1 ready · 2 edges",
+   "  [+] unit0 · completed",
+   "  [R] unit1 · prepared_not_observed",
+   "  [!] unit2 · failed · blocked_by unit0 + unit1",
+   "⠋ [sub] worker0  Worker…  ·  architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker…  ·  critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens",
+   "· [bot] worker2  Worker…  ·  kanban/miku(kimi-k3:high)           ready   ·         ·   3.6k tokens",
+   "⠋       worker3  Worker…  ·  (claude/maestro claude-fable-5-1)   running · 33s     ·   4.8k tokens",
+   "▲ [sub] worker4  Blocke…  ·  inherit(claude-opus-5-5:high)       blocked · 34s     ·   6.0k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Parity plan │ 5/13 (1 skipped) · 8 phases .",
+   "... (4 earlier tasks)",
+   "Phase 4",
+   "  [✓] Task number 4 with a fairly long description to truncate",
+   "Phase 5",
+   "  [•] Task number 5 with a fairly long description to truncate",
+   "Phase 6",
+   "  [ ] Task number 6 with a fairly long description to truncate",
+   "Phase 7",
+   "  [ ] Task number 7 with a fairly l… (waiting: needs the owner's call on the layout of the pan…)",
+   "  [ ] Task number 8 with a fairly long description to truncate",
+   "  [ ] Task number 9 with a fairly long description to truncate",
+   "  [ ] Task number 10 with a fairly long description to truncate",
+   "  [ ] Task number 11 with a fairly long description to truncate",
+   "... (1 later task)"
+  ]
+ },
+ {
+  "cols": 100,
+  "plan": "Small plan",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker…  ·  architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker…  ·  critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Small plan │ ✓ 2/3 (1 skipped)"
+  ]
+ },
+ {
+  "cols": 100,
+  "plan": "Esc\u001b[1m plan, person's",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker…  ·  architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker…  ·  critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Esc plan, person's │ 0/3 .",
+   "[•] Ship the red fix, it's ready?",
+   "[ ] Read the link then stop",
+   "[ ] cut"
+  ]
+ },
+ {
+  "cols": 140,
+  "plan": "Parity plan",
+  "agent_rows": [
+   "  [global] DAG · 1 ready · 2 edges",
+   "  [+] unit0 · completed",
+   "  [R] unit1 · prepared_not_observed",
+   "  [!] unit2 · failed · blocked_by unit0 + unit1",
+   "⠋ [sub] worker0  Worker 0 action                         ·  category:architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker 1 action                         ·  category:critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens",
+   "· [bot] worker2  Worker 2 action                         ·  kanban/miku(kimi-k3:high)                    ready   ·         ·   3.6k tokens",
+   "⠋       worker3  Worker 3 action                         ·  (claude/maestro claude-fable-5-1)            running · 33s     ·   4.8k tokens",
+   "▲ [sub] worker4  Blocked worker 한글 제목                ·  inherit(claude-opus-5-5:high)                blocked · 34s     ·   6.0k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Parity plan │ 5/13 (1 skipped) · 8 phases .",
+   "... (4 earlier tasks)",
+   "Phase 4",
+   "  [✓] Task number 4 with a fairly long description to truncate",
+   "Phase 5",
+   "  [•] Task number 5 with a fairly long description to truncate",
+   "Phase 6",
+   "  [ ] Task number 6 with a fairly long description to truncate",
+   "Phase 7",
+   "  [ ] Task number 7 with a fairly long description to truncate (waiting: needs the owner's call on the layout of the pan…)",
+   "  [ ] Task number 8 with a fairly long description to truncate",
+   "  [ ] Task number 9 with a fairly long description to truncate",
+   "  [ ] Task number 10 with a fairly long description to truncate",
+   "  [ ] Task number 11 with a fairly long description to truncate",
+   "... (1 later task)"
+  ]
+ },
+ {
+  "cols": 140,
+  "plan": "Small plan",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker 0 action                         ·  category:architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker 1 action                         ·  category:critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Small plan │ ✓ 2/3 (1 skipped)"
+  ]
+ },
+ {
+  "cols": 140,
+  "plan": "Esc\u001b[1m plan, person's",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker 0 action                         ·  category:architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens",
+   "✓ [sub] worker1  Worker 1 action                         ·  category:critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Esc plan, person's │ 0/3 .",
+   "[•] Ship the red fix, it's ready?",
+   "[ ] Read the link then stop",
+   "[ ] cut"
+  ]
+ },
+ {
+  "cols": 200,
+  "plan": "Parity plan",
+  "agent_rows": [
+   "  [global] DAG · 1 ready · 2 edges",
+   "  [+] unit0 · completed",
+   "  [R] unit1 · prepared_not_observed",
+   "  [!] unit2 · failed · blocked_by unit0 + unit1",
+   "⠋ [sub] worker0  Worker 0 action                                   ·  category:architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens  ·  fallback:1  ·  cache 88%  ·  ctx 40%",
+   "✓ [sub] worker1  Worker 1 action                                   ·  category:critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens",
+   "· [bot] worker2  Worker 2 action                                   ·  kanban/miku(kimi-k3:high)                    ready   ·         ·   3.6k tokens",
+   "⠋       worker3  Worker 3 action                                   ·  (claude/maestro claude-fable-5-1)            running · 33s     ·   4.8k tokens",
+   "▲ [sub] worker4  Blocked worker 한글 제목                          ·  inherit(claude-opus-5-5:high)                blocked · 34s     ·   6.0k tokens  ·  $0.0000 (included)"
+  ],
+  "plan_rows": [
+   "[Plan] Parity plan │ 5/13 (1 skipped) · 8 phases .",
+   "... (4 earlier tasks)",
+   "Phase 4",
+   "  [✓] Task number 4 with a fairly long description to truncate",
+   "Phase 5",
+   "  [•] Task number 5 with a fairly long description to truncate",
+   "Phase 6",
+   "  [ ] Task number 6 with a fairly long description to truncate",
+   "Phase 7",
+   "  [ ] Task number 7 with a fairly long description to truncate (waiting: needs the owner's call on the layout of the pan…)",
+   "  [ ] Task number 8 with a fairly long description to truncate",
+   "  [ ] Task number 9 with a fairly long description to truncate",
+   "  [ ] Task number 10 with a fairly long description to truncate",
+   "  [ ] Task number 11 with a fairly long description to truncate",
+   "... (1 later task)"
+  ]
+ },
+ {
+  "cols": 200,
+  "plan": "Small plan",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker 0 action                                   ·  category:architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens  ·  fallback:1  ·  cache 88%  ·  ctx 40%",
+   "✓ [sub] worker1  Worker 1 action                                   ·  category:critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Small plan │ ✓ 2/3 (1 skipped)"
+  ]
+ },
+ {
+  "cols": 200,
+  "plan": "Esc\u001b[1m plan, person's",
+  "agent_rows": [
+   "⠋ [sub] worker0  Worker 0 action                                   ·  category:architect(claude-opus-5-5:high)     running · 30s     ·   1.2k tokens  ·  fallback:1  ·  cache 88%  ·  ctx 40%",
+   "✓ [sub] worker1  Worker 1 action                                   ·  category:critic(gpt-6.1-sol:xhigh fallback)  done    · 31s     ·   2.4k tokens"
+  ],
+  "plan_rows": [
+   "[Plan] Esc plan, person's │ 0/3 .",
+   "[•] Ship the red fix, it's ready?",
+   "[ ] Read the link then stop",
+   "[ ] cut"
+  ]
+ }
+]
