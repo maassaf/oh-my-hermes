@@ -1349,6 +1349,12 @@ class App(ModesMixin, AgentViewMixin):
             result = self.client.call("session.resume", {"session_id": resume, "cols": self.size[0]})
         else:
             result = self.client.call("session.create", self._create_params())
+        info = result.get("info")
+        self.launch_profile = as_text(info.get("profile_name")) if isinstance(info, dict) else ""
+        home = self._snapshot_home()
+        # Last-known until the session's own skills: its create answer's info (a shared gateway's carries them
+        # all), or the session.info after Hermes' build (a lazy create's names none).
+        self.session_skills = read_snapshot(home, *self._snapshot_key()) if home is not None else None
         self._adopt_session(result, fallback_stored=resume)
         self._request("config.get", {"key": "full"}, self._take_settings, self._on_settings_refused)
         self._refresh_catalog()
@@ -1358,10 +1364,6 @@ class App(ModesMixin, AgentViewMixin):
         self.banner_facts = dict(self.banner_record)
         self.logo_due = True
         self._load_launch_look()
-        info = result.get("info")
-        self.launch_profile = as_text(info.get("profile_name")) if isinstance(info, dict) else ""
-        home = self._snapshot_home()
-        self.session_skills = read_snapshot(home, *self._snapshot_key()) if home is not None else None
         self.card_state = CARD_NONE if resume else CARD_LIVE
         if resume:
             self._draw_history(result.get("messages"))
@@ -1544,6 +1546,7 @@ class App(ModesMixin, AgentViewMixin):
         self.effort = self.effort_configured  # until this session says its own (Hermes' lazy info names none)
         self.effort_said = False
         self._take_session_state(info if isinstance(info, dict) else {})
+        self._take_skills(info if isinstance(info, dict) else {})
         self._adopt_stored(as_text(result.get("stored_session_id")) or fallback_stored)
 
     def _adopt_stored(self, stored: str) -> None:
@@ -2276,23 +2279,33 @@ class App(ModesMixin, AgentViewMixin):
         self.transcript.add_notice(CONNECTION_NOTICE, NOTICE_WARN)
 
     def _on_session_info(self, payload: Mapping[str, Any]) -> None:
-        skills = payload.get("skills")
-        if isinstance(skills, dict) and skills:  # Hermes' lazy first info names none; the full one, after its build
-            rows = skill_rows({key: value for key, value in skills.items() if isinstance(value, list)})
-            home = self._snapshot_home()
-            # What the next launch draws first, kept only when this info names the profile the launch opened on.
-            same_profile = payload.get("profile_name") == self.launch_profile
-            if home is not None and same_profile and rows != self.snapshot_kept:
-                write_snapshot(home, *self._snapshot_key(), rows)
-                self.snapshot_kept = rows
-            self.session_skills = rows
-            self.dirty = True
+        self._take_skills(payload)
         self.model = as_text(payload.get("model")) or self.model
         self._take_usage(payload.get("usage"))
         self._take_session_state(payload)
         # `running` is not read: the previous turn's closing `running: false` arrives after
         # `message.complete`, by which time a queued prompt may already be pending.
         self._adopt_stored(as_text(payload.get("stored_session_id")))
+
+    def _take_skills(self, info: Mapping[str, Any]) -> None:
+        """The skills a session's info names replace the shown ones; an info naming none leaves them.
+
+        Hermes' lazy info (a stdio `session.create`'s, its first `session.info`) names none and the full one after
+        its build does; over a shared gateway the `session.create` answer already names them all and no
+        `session.info` follows, so both are read.
+        """
+        skills = info.get("skills")
+        if not isinstance(skills, dict) or not skills:
+            return
+        rows = skill_rows({key: value for key, value in skills.items() if isinstance(value, list)})
+        home = self._snapshot_home()
+        # What the next launch draws first, kept only when this info names the profile the launch opened on.
+        same_profile = info.get("profile_name") == self.launch_profile
+        if home is not None and same_profile and rows != self.snapshot_kept:
+            write_snapshot(home, *self._snapshot_key(), rows)
+            self.snapshot_kept = rows
+        self.session_skills = rows
+        self.dirty = True
 
     def _take_usage(self, usage: object) -> None:
         """A usage block with context figures replaces the shown ones; one without leaves them. Its `output` counts tokens.

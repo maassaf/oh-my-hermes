@@ -81,12 +81,15 @@ def texts(lines) -> list[str]:
 
 class StartClient(RecordingClient):
     profile: str | None = None  # the `profile_name` session.create's info carries; None: no such key
+    skills: dict | None = None  # the `skills` session.create's info carries (a shared gateway's names them all)
 
     def call(self, method: str, params: dict, timeout: float = 30.0) -> dict:
         self.calls.append((method, params))
         info = {"model": "openai/gpt-6.1-sol", "cwd": "/p"}
         if self.profile is not None:
             info["profile_name"] = self.profile
+        if self.skills is not None:
+            info["skills"] = self.skills
         return {"session_id": SID, "stored_session_id": "stored-1", "info": info}
 
 
@@ -94,12 +97,13 @@ class Launched:
     """A launched app on a scripted terminal, its OMH home a temporary directory."""
 
     def __init__(self, rows: int = 42, cols: int = 150, look: str | None = None, env: dict | None = None,
-                 profile: str | None = None) -> None:
+                 profile: str | None = None, skills: dict | None = None) -> None:
         self.home = Path(tempfile.mkdtemp(prefix="omh-launch-test-")) / ".omh"
         if look is not None:
             write_launch_choice(self.home, look)
         self.client = StartClient()
         self.client.profile = profile
+        self.client.skills = skills
         self.app = App(ScriptedTerminal(rows, cols), self.client, {"OMH_HOME": str(self.home), **(env or {})},
                        poller=FakePoller())  # type: ignore[arg-type]
         self.app.startup()  # as `_run` starts it: the session, then the background, then the cleared screen
@@ -367,6 +371,23 @@ class SnapshotTests(unittest.TestCase):
                 self.assertIn("ulw-plan", screen)
                 run.info()  # put back for the next look's launch
                 self.assertEqual(kept(first.home), replace(skill_rows(SKILLS), last_known=True))
+
+    def test_skills_the_create_answer_names_are_drawn_without_a_session_info(self) -> None:
+        # A shared gateway's session.create answers with every skill and sends no session.info after it (#2285).
+        first = self.first()
+        gone = {key: [name for name in names if name != "omh-lone"] for key, names in SKILLS.items()}
+        run = Launched(env={"OMH_HOME": str(first.home), "HERMES_HOME": HERMES}, profile="default", skills=gone)
+        screen = "\n".join(run.screen())
+        self.assertNotIn("loading…", screen)
+        self.assertNotIn("last-known", screen)  # the session's own, not the snapshot the first launch kept
+        self.assertNotIn("omh-lone", screen)
+        self.assertIn("ulw-plan", screen)
+        self.assertEqual(kept(first.home), replace(skill_rows(gone), last_known=True))
+        for empty in ({}, None):  # a lazy create names none: the snapshot stays until the session.info
+            with self.subTest(skills=empty):
+                run = Launched(env={"OMH_HOME": str(first.home), "HERMES_HOME": HERMES}, profile="default",
+                               skills=empty)
+                self.assertIn("last-known", "\n".join(run.screen()))
 
     def test_another_hermes_home_or_profile_never_draws_this_ones_skills(self) -> None:
         first = self.first()
