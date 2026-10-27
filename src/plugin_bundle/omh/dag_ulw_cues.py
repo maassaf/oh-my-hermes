@@ -885,7 +885,10 @@ def _korean_request_verb(folded: str) -> tuple[str, bool]:
 # request keeps nothing, and the message is read whole, as on main ("…해줘, 해도 되나", "…해줘, 이거 맞아?", "…해줘,
 # 확인해줘"). After an English request a remark keeps it too, and only a refusal or a new request does not ("…, what do
 # you think", "…, not sure though", "…, run the tests": `_remarks_keep_the_request`, `_trails_off`).
-_CLAUSE_BREAK: Final = re.compile(r"\s*(?:[,;—–…]|\.{2,}|\s-\s)\s*")
+# The leading space is read only where a run of it starts (`(?<!\s)`), or not at all right after an earlier cut: the
+# same cuts, but a search no longer re-reads a run of spaces from each of its positions, which is quadratic in the run,
+# and a fenced log masked to spaces by `executable_routing_text` is one long run.
+_CLAUSE_BREAK: Final = re.compile(r"(?:(?<!\s)\s*)?(?:[,;—–…]|\.{2,}|\s-\s)\s*")
 _INTENSIFIER: Final = r"(?:(?:최대한|가능한(?:\s*한)?|되도록|좀|진짜|정말|제발|너무|완전)\s*)?"
 _TIME_WORD: Final = (
     r"(?:오늘|내일|모레|글피|이번\s*주|다음\s*주|이번\s*달|다음\s*달|주말|월말|연말|[월화수목금토일]요일|오전|오후|점심|저녁|아침|밤"
@@ -955,7 +958,7 @@ _HEDGE_IN_AN_ITEM: Final = re.compile(
 # The head: the request so far ends in the first item of a colon list after a breadth word; a colon after a whole
 # request opens a list too ("rebase all my open PRs: done, done, conflict"), and a colon between digits is a time.
 _EN_LIST_HEAD: Final = re.compile(rf"(?:{_EN_BREADTH}|\bfor\s+(?:each|every|all)\b|\b{_EN_PLURAL_UNITS}\b)[^:,.!?]*:[^,]*$")
-_LIST_COLON: Final = re.compile(r"\s*(?<!\d):(?!\d)\s*")
+_LIST_COLON: Final = re.compile(r"(?:(?<!\s)\s*)?(?<!\d):(?!\d)\s*")  # leading space as in `_CLAUSE_BREAK`
 _HOLD: Final = re.compile(
     r"농담|장난|됐어|됐고|(?<![가-힣])(?:아냐|아니야|아니다|아니|잠깐만?|잠시만?|말고)(?![가-힣])"
     r"|\b(?:jk|j/k|kidding|never\s*mind|nvm|wait|hold\s+on)\b"
@@ -1014,7 +1017,7 @@ def _korean_clauses(folded: str) -> list[str]:
 # other "let me <verb>" is the person's own step ("…, and let me check with the team first"), and a tail that asks for
 # anything before the work or about whether to do it is no report ("…, then tell me why we shouldn't", "…, then tell me the risks first", "…, and tell me what
 # would break before you do"): both stay trailing clauses that keep nothing (`_trails_off`).
-_FINAL_CONFIRMATION_TAG: Final = re.compile(r"\s*,\s*(?:ok|okay|alright|right)\s*[?？]+\s*$")
+_FINAL_CONFIRMATION_TAG: Final = re.compile(r"(?:(?<!\s)\s*)?,\s*(?:ok|okay|alright|right)\s*[?？]+\s*$")  # as `_CLAUSE_BREAK`
 _DONE_CLAUSE: Final = (
     r"(?:when|once|after)\s+(?:[a-z']+\s+){0,3}?(?:(?:is|are|has|have)\s+)?(?:been\s+|all\s+)?"
     r"(?:done|finished|finishes|complete[ds]?|merged|lands?|landed|green|through|ready|over|deployed|shipped|in|passes"
