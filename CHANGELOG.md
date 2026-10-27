@@ -4,6 +4,21 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+- **The gateway-attach client no longer aborts (SIGABRT) when it exits while
+  its stdin-reader thread is still blocked (#2327).** `gateway_attach.py`'s
+  `omh-attach-stdin` daemon thread reads `sys.stdin.buffer` in a plain
+  blocking loop with no stop signal. Whenever the relay ended first — most
+  visibly when the owner's side closed before `gateway.ready` arrived — the
+  process's normal `sys.exit` finalization tried to close `sys.stdin` on the
+  main thread while that thread still held its buffer lock mid-read, and
+  CPython's daemon-thread shutdown guard (`_enter_buffered_busy`) aborted the
+  whole process instead of exiting cleanly. Because the same race reproduced
+  on every fresh attach, each of the TUI's 3 automatic reconnect retries
+  crashed identically, and the attach gave up reporting a `gateway.ready`
+  timeout that was never the real failure. The process now flushes stdout
+  and stderr and calls `os._exit` with the same status `main()` already
+  computed, skipping the finalization step that raced with the thread.
+
 - **The OMH TUI shows up in herdr's agent list.** herdr lists each pane's
   agent as idle, working or blocked, but reads Hermes' state from Hermes' own
   title and screen, which the OMH TUI does not draw, so a pane running `omh`

@@ -1186,4 +1186,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # `_start_stdin_reader` leaves a daemon thread blocked in a read on `sys.stdin.buffer`
+    # for the life of the process. If that thread is still blocked when `main()` returns,
+    # `sys.exit` runs the interpreter's normal finalization, which closes `sys.stdin` on the
+    # main thread while the reader thread still holds its buffer lock mid-read; CPython
+    # treats that as an unrecoverable daemon-thread/shutdown race and aborts the process
+    # (SIGABRT) instead of closing cleanly. `os._exit` skips that finalization entirely.
+    _exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_exit_code)
