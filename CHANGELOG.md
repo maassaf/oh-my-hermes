@@ -4,6 +4,13 @@ All notable changes will be documented here.
 
 ## Unreleased
 
+## 4.0.4 - 2026-10-28
+
+- **This release ships the 4.0.3 changes, including the Hermes Atlas
+  security fixes.** The `v4.0.3` tag was cut but never published: `main`
+  advanced before its npm approval, and release recovery only accepts
+  release-control changes after a tag. See the 4.0.3 section below.
+
 ![Sprite Forge patch notes](https://raw.githubusercontent.com/rlaope/oh-my-hermes/main/assets/omh-sprite-forge-patch-notes.png)
 
 - **Character sprite sheets become aligned game frames (`sprite-forge`).**
